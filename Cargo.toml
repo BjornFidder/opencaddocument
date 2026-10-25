@@ -10,4 +10,4 @@ repository = "https://github.com/HakanSeven12/opencaddocument"
 serde = ["acadrust/serde"]
 
 [dependencies]
-acadrust = { git = "https://github.com/HakanSeven12/opencadcodec.git", rev = "24b037a" }
+acadrust = { git = "https://github.com/HakanSeven12/acadrust.git", rev = "24b037a" }
