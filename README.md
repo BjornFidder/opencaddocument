@@ -15,5 +15,5 @@ representation and converts at the edge. `Placement` is the first example:
   the first save, saving again produces the same bytes.
 
 DWG and DXF reading and writing come from
-[acadrust](https://github.com/HakanSeven12/opencadcodec), a fork of the
+[acadrust](https://github.com/HakanSeven12/acadrust), a fork of the
 upstream acadrust crate.
