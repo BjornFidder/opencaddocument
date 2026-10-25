@@ -19,6 +19,8 @@ pub struct Loss {
 pub trait Format {
     /// Short name, such as `"DWG"`.
     fn name(&self) -> &str;
+    /// File extensions it reads and writes, lowercase and without the dot.
+    fn extensions(&self) -> &[&str];
     fn read(&self, bytes: &[u8]) -> Result<(Document, Vec<Loss>), Error>;
     fn write(&self, document: &Document) -> Result<(Vec<u8>, Vec<Loss>), Error>;
 }
@@ -38,6 +40,10 @@ impl Format for Dwg {
         "DWG"
     }
 
+    fn extensions(&self) -> &[&str] {
+        &["dwg", "dwt", "dws"]
+    }
+
     fn read(&self, bytes: &[u8]) -> Result<(Document, Vec<Loss>), Error> {
         let document = DwgReader::from_stream(Cursor::new(bytes.to_vec())).read()?;
         Ok((document, Vec::new()))
@@ -54,6 +60,10 @@ pub struct Dxf;
 impl Format for Dxf {
     fn name(&self) -> &str {
         "DXF"
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["dxf"]
     }
 
     fn read(&self, bytes: &[u8]) -> Result<(Document, Vec<Loss>), Error> {
