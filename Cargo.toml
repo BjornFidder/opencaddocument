@@ -1,0 +1,10 @@
+[package]
+name = "opencaddocument"
+version = "0.1.0"
+edition = "2021"
+description = "Shared, DWG-centred drawing model with converters to and from other formats"
+license = "MPL-2.0"
+repository = "https://github.com/HakanSeven12/opencaddocument"
+
+[dependencies]
+acadrust = { git = "https://github.com/HakanSeven12/opencadcodec.git", rev = "24b037a" }
