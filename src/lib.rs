@@ -9,7 +9,10 @@
 mod format;
 mod placement;
 
+// Everything acadrust offers is part of the model's surface, so callers name
+// one crate. Items defined here take precedence over the glob.
 pub use acadrust;
+pub use acadrust::*;
 pub use format::{snap, Dwg, Dxf, Error, Format, Loss};
 pub use placement::Placement;
 
