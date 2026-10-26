@@ -438,9 +438,6 @@ struct Writer<'a> {
 
 impl Writer<'_> {
     fn entity(&mut self, entity: &EntityType) -> Result<Option<IfccadEntity>, Error> {
-        if let EntityType::Dimension(dimension) = entity {
-            dimension_graphics::validate_link(self.document, dimension)?;
-        }
         let Some(mut kind) = self.kind(entity)? else {
             self.losses.note(entity.as_entity().entity_type());
             return Ok(None);

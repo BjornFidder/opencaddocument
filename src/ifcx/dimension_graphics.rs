@@ -510,13 +510,18 @@ pub(super) fn import(
         }
         Ok(parts)
     };
+    // A picture that cannot be taken over, malformed or not, is left out
+    // with its reason; the drawing around it still reads.
     let parts = match prepare() {
         Ok(parts) => parts,
         Err(Problem::Unsupported(reason)) => {
             losses.note(format!("dimension {id} graphics: {reason}"));
             return Ok(None);
         }
-        Err(Problem::Invalid(error)) => return Err(error),
+        Err(Problem::Invalid(error)) => {
+            losses.note(format!("dimension {id} graphics: {error}"));
+            return Ok(None);
+        }
     };
     let mut number = 1;
     let name = loop {
@@ -782,39 +787,6 @@ fn numeric_tree(
     Ok(())
 }
 
-pub(super) fn validate_link(document: &Document, dimension: &Dimension) -> Result<(), Error> {
-    let base = dimension.base();
-    if base.block_name.is_empty() {
-        return Ok(());
-    }
-    let validate = || -> Prepared<()> {
-        for v in [base.normal, base.insertion_point, base.insertion_scale] {
-            for x in [v.x, v.y, v.z] {
-                finite(x)?;
-            }
-        }
-        finite(base.insertion_rotation)?;
-        let record = document
-            .block_records
-            .get(&base.block_name)
-            .ok_or_else(|| invalid("dangling Dimension picture block link"))?;
-        if record.is_layout() {
-            return Err(invalid("Dimension picture links a layout block"));
-        }
-        numeric_tree(
-            document,
-            &base.block_name,
-            &mut BTreeSet::new(),
-            &mut BTreeSet::new(),
-        )
-    };
-    match validate() {
-        Ok(()) => Ok(()),
-        Err(Problem::Invalid(error)) => Err(error),
-        Err(Problem::Unsupported(reason)) => Err(reason.into()),
-    }
-}
-
 fn record_metadata(document: &Document, record: &BlockRecord, marker: bool) -> Prepared<()> {
     // Header content is separate from BLOCK_RECORD in the CAD model. It must
     // not disappear merely because the record itself is representable.
@@ -1076,23 +1048,25 @@ pub(super) fn capture(
         }
         Ok(parts)
     };
-    let parts = match prepare() {
-        Ok(parts) => parts,
-        Err(Problem::Unsupported(reason)) => {
-            w.losses.note(format!(
-                "dimension {} graphics: {reason}",
-                base.common.handle
-            ));
-            return Ok(None);
+    // A picture that cannot be written, malformed or not, is left out with
+    // its reason; the drawing around it still saves.
+    let reason = match prepare() {
+        Ok(parts) => {
+            w.drawing.blocks.extend(staged.drawing.blocks);
+            w.blocks = staged.blocks;
+            w.drawing.id_counters = staged.drawing.id_counters;
+            w.entity_ids.extend(staged.entity_ids);
+            return Ok(Some(IfccadDimensionGraphics {
+                origin: Origin::SourceSnapshot,
+                parts,
+            }));
         }
-        Err(Problem::Invalid(error)) => return Err(error),
+        Err(Problem::Unsupported(reason)) => reason,
+        Err(Problem::Invalid(error)) => error.to_string(),
     };
-    w.drawing.blocks.extend(staged.drawing.blocks);
-    w.blocks = staged.blocks;
-    w.drawing.id_counters = staged.drawing.id_counters;
-    w.entity_ids.extend(staged.entity_ids);
-    Ok(Some(IfccadDimensionGraphics {
-        origin: Origin::SourceSnapshot,
-        parts,
-    }))
+    w.losses.note(format!(
+        "dimension {} graphics: {reason}",
+        base.common.handle
+    ));
+    Ok(None)
 }

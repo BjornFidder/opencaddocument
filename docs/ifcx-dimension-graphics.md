@@ -12,9 +12,10 @@ kinds, regeneration, freshness assessment, association repair or metadata store.
 A picture transfers only when every ordered part and its complete reachable
 marker-block closure qualifies. Preparation is atomic: an unsupported part
 omits the whole picture with a reason, without leaving partial picture resources.
-The independently supported definition remains. Malformed required block/layer
-references, cycles and nonfinite recognized geometry return errors instead of
-being converted into absence. This is a picture conversion boundary, not an
+The independently supported definition remains. Malformed block/layer
+references, cycles and nonfinite recognized geometry omit the picture the same
+way, with the problem as the reason, so one bad picture never fails the whole
+read or write. This is a picture conversion boundary, not an
 audit of every unsupported CAD entity or arbitrary object in a Document.
 
 The initial profile uses canonical, unrotated +Z frames. Coordinate translations

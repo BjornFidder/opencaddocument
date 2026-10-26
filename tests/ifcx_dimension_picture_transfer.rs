@@ -138,6 +138,12 @@ fn add_picture(document: &mut Document, parts: Vec<EntityType>) {
     d.base_mut().block_name = "*D1".into();
 }
 
+/// Writing succeeds and reports the dimension's picture as left out.
+fn picture_dropped(document: &Document) -> bool {
+    let (_, losses) = Ifcx.write(document).unwrap();
+    losses.iter().any(|loss| loss.message.contains("graphics"))
+}
+
 fn line() -> EntityType {
     EntityType::Line(Line::from_points(
         Vector3::new(16., 9., 0.),
@@ -439,12 +445,12 @@ fn unqualified_rounding_and_frames_are_reported_without_a_partial_block() {
 }
 
 #[test]
-fn dangling_picture_links_and_nonfinite_picture_coordinates_are_errors() {
+fn dangling_picture_links_and_nonfinite_picture_coordinates_leave_the_picture_out() {
     let (mut document, _) = read(&source());
     let mut bad = Line::from_points(Vector3::new(f64::NAN, 0., 0.), Vector3::new(1., 0., 0.));
     bad.common.layer = "0".into();
     add_picture(&mut document, vec![EntityType::Line(bad)]);
-    assert!(Ifcx.write(&document).is_err());
+    assert!(picture_dropped(&document));
     let handle = document
         .model_space_entities()
         .find_map(|e| match e {
@@ -456,7 +462,7 @@ fn dangling_picture_links_and_nonfinite_picture_coordinates_are_errors() {
         panic!()
     };
     d.base_mut().block_name = "Missing".into();
-    assert!(Ifcx.write(&document).is_err());
+    assert!(picture_dropped(&document));
 }
 
 fn marker(drawing: &mut IfccadDocument, kind: IfccadEntityKind) -> u64 {
@@ -651,7 +657,7 @@ fn nonfinite_late_sibling_cannot_be_hidden_by_an_unsupported_earlier_sibling() {
         &mut document,
         vec![EntityType::Line(unsupported), EntityType::Line(invalid)],
     );
-    assert!(Ifcx.write(&document).is_err());
+    assert!(picture_dropped(&document));
 }
 
 #[test]
@@ -785,7 +791,7 @@ fn positive_pictures_in_paper_and_block_owners_keep_scope_positions() {
 }
 
 #[test]
-fn unresolved_picture_layer_handles_and_nonfinite_clone_state_are_errors() {
+fn unresolved_picture_layer_handles_and_nonfinite_clone_state_leave_the_picture_out() {
     let (mut document, _) = read(&source());
     add_picture(&mut document, vec![line()]);
     let member = document
@@ -799,7 +805,7 @@ fn unresolved_picture_layer_handles_and_nonfinite_clone_state_are_errors() {
         .unwrap()
         .common_mut()
         .layer_handle = Some(opencaddocument::Handle::new(0xffff_ffff));
-    assert!(Ifcx.write(&document).is_err());
+    assert!(picture_dropped(&document));
     document
         .get_entity_mut(member)
         .unwrap()
@@ -816,7 +822,7 @@ fn unresolved_picture_layer_handles_and_nonfinite_clone_state_are_errors() {
         panic!()
     };
     d.base_mut().insertion_rotation = f64::NAN;
-    assert!(Ifcx.write(&document).is_err());
+    assert!(picture_dropped(&document));
 }
 
 #[test]
@@ -1012,7 +1018,7 @@ fn picture_header_metadata_is_diagnosed() {
 }
 
 #[test]
-fn mistyped_picture_headers_and_missing_member_handles_are_errors() {
+fn mistyped_picture_headers_and_missing_member_handles_leave_the_picture_out() {
     for header in [false, true] {
         let (mut document, _) = read(&source());
         add_picture(&mut document, vec![line()]);
@@ -1023,6 +1029,6 @@ fn mistyped_picture_headers_and_missing_member_handles_are_errors() {
         } else {
             record.entity_handles.push(missing);
         }
-        assert!(Ifcx.write(&document).is_err(), "header={header}");
+        assert!(picture_dropped(&document), "header={header}");
     }
 }
