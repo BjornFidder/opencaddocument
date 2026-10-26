@@ -108,7 +108,11 @@ fn check_round_trip(bytes: &[u8], expected_losses: &[Loss]) {
         let actual = dimensions(restored_entities);
         assert_eq!(actual.len(), expected.len());
         for (before, after) in expected.into_iter().zip(actual) {
-            assert!(after.graphics.is_none());
+            if before.graphics.as_ref().is_some_and(|g| g.parts.is_empty()) {
+                assert!(after.graphics.as_ref().unwrap().parts.is_empty());
+            } else {
+                assert!(after.graphics.is_none());
+            }
             // The writer recentres the local frame on the dimension line.
             // Compare definition points in the owning scope, not local coordinates.
             assert_eq!(after.placement.x_axis, before.placement.x_axis);
@@ -178,14 +182,23 @@ fn check_round_trip(bytes: &[u8], expected_losses: &[Loss]) {
     assert!(losses.is_empty(), "{losses:?}");
 }
 
-fn graphics_loss(count: usize) -> Vec<Loss> {
-    vec![Loss {
-        handle: None,
-        message: match count {
-            1 => "stored dimension graphics: not converted".to_string(),
-            n => format!("stored dimension graphics: not converted ({n}×)"),
-        },
-    }]
+fn fixture_losses(snapshot: bool, generated: bool) -> Vec<Loss> {
+    // The original snapshot's helper is on explicit layer 0, not Defpoints.
+    // The empty Generated picture now transfers, with its provenance loss.
+    let mut messages = Vec::new();
+    if snapshot {
+        messages.push("dimension 9007199254740994 graphics: explicit layer 0 would acquire CAD inheritance: not converted");
+    }
+    if generated {
+        messages.push("dimension 9007199254740995 graphics provenance (Generated): not converted");
+    }
+    messages
+        .into_iter()
+        .map(|message| Loss {
+            handle: None,
+            message: message.into(),
+        })
+        .collect()
 }
 
 #[test]
@@ -202,7 +215,7 @@ fn importing_stored_dimension_graphics_reports_loss() {
         dimensions[1].graphics.as_ref().unwrap().origin,
         IfccadDimensionGraphicsOrigin::Generated
     );
-    check_round_trip(GRAPHICS, &graphics_loss(2));
+    check_round_trip(GRAPHICS, &fixture_losses(true, true));
 }
 
 #[test]
@@ -234,7 +247,7 @@ fn a_single_stored_picture_reports_one_loss_for_either_origin() {
             .unwrap();
         dimension.graphics = None;
         let encoded = encode_ifccad_document(&source).unwrap();
-        check_round_trip(encoded.bytes(), &graphics_loss(1));
+        check_round_trip(encoded.bytes(), &fixture_losses(remove != 0, remove != 1));
     }
 }
 
@@ -256,7 +269,7 @@ fn stored_dimension_graphics_in_block_members_report_loss() {
     });
     source.id_counters.next_block_id = 2;
     let encoded = encode_ifccad_document(&source).unwrap();
-    check_round_trip(encoded.bytes(), &graphics_loss(2));
+    check_round_trip(encoded.bytes(), &fixture_losses(true, true));
 }
 
 #[test]
@@ -274,5 +287,5 @@ fn stored_dimension_graphics_in_paper_layouts_report_loss() {
     });
     source.id_counters.next_layout_id = 3;
     let encoded = encode_ifccad_document(&source).unwrap();
-    check_round_trip(encoded.bytes(), &graphics_loss(2));
+    check_round_trip(encoded.bytes(), &fixture_losses(true, true));
 }
