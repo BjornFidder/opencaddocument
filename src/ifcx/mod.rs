@@ -2,10 +2,11 @@
 //! mapping between its drawing model and a [`Document`] lives here, so the two
 //! libraries never depend on each other.
 //!
-//! Everything IFCX defines maps both ways: the drawing tables, block
+//! The mapping covers the drawing tables, block
 //! definitions, paper layouts with their viewports and plot settings, the
-//! workspace state, and every IFCX entity kind. What IFCX has no place for is
-//! reported as a [`Loss`].
+//! workspace state, and every IFCX entity kind. Stored dimension graphics are
+//! omitted and reported as a [`Loss`] on import. What IFCX has no place for is
+//! also reported as a loss.
 
 use std::collections::{BTreeMap, HashMap};
 use std::f64::consts::TAU;
@@ -361,7 +362,9 @@ fn add_in(
         return Ok(None);
     };
     let converted = match &entity.kind {
-        IfccadEntityKind::Dimension(source) => dimension::dimension_in(source, document, names),
+        IfccadEntityKind::Dimension(source) => {
+            dimension::dimension_in(source, document, names, losses)
+        }
         kind => entity_in(kind, names, losses),
     };
     let Some(mut converted) = converted else {

@@ -18,12 +18,16 @@ With the `ifcx` feature, the `Ifcx` format reads and writes IFCX through
 [ifccad](https://github.com/OpenAEC-Foundation/ifccad):
 - ifccad only reads and writes the files; the mapping to `Document` lives here,
   so neither library depends on the other.
-- Everything IFCX defines maps both ways: layers, line patterns with their
+- The IFCX mapping covers layers, line patterns with their
   SHX and text symbols, text styles, dimension styles, UCSs, the point
   display, block definitions, paper layouts with their sheet and plot
   settings, viewports, model windows and the workspace state, and lines,
   circles, arcs, ellipses, points, 2D and 3D polylines, solids, traces,
   texts, MText, hatches, linear and aligned dimensions and block inserts.
+- Stored dimension graphics are not carried into `Document`. Import reports
+  this loss for each dimension with graphics, counted together in the loss
+  report. A dimension without graphics does not incur this loss. Its supported
+  definition is retained; equivalent regenerated graphics are not guaranteed.
 - What IFCX has no place for is reported as a loss: other dimension kinds,
   splines, 3D solids and the like, raster sheets, attributes.
 - An IFCX file's identity (header id, drawing id) rides on custom document
