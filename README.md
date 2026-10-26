@@ -25,7 +25,7 @@ With the `ifcx` feature, the `Ifcx` format reads and writes IFCX through
   circles, arcs, ellipses, points, 2D and 3D polylines, solids, traces,
   texts, MText, hatches, linear and aligned dimensions and block inserts.
 - Stored dimension graphics transfer in both directions using native CAD
-  picture blocks within an exact planar profile. Unsupported pictures are
+  picture blocks within a numerically bounded planar profile. Unsupported pictures are
   omitted as a whole with a loss report; the supported definition is retained
   independently. No graphics are regenerated. See the
   [picture coverage and preservation limits](docs/ifcx-dimension-graphics.md).

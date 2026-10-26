@@ -422,7 +422,7 @@ fn source_helpers_and_explicit_layer_zero_are_never_silently_changed() {
 }
 
 #[test]
-fn unqualified_rounding_and_frames_are_reported_without_a_partial_block() {
+fn bounded_rounding_and_rotated_dimension_frames_keep_owner_geometry() {
     for tilted in [false, true] {
         let mut drawing = source();
         let d = dimension_mut(&mut drawing);
@@ -439,9 +439,158 @@ fn unqualified_rounding_and_frames_are_reported_without_a_partial_block() {
             },
         )]));
         let (document, losses) = read(&drawing);
-        assert_eq!(losses.len(), 1, "{losses:?}");
-        assert!(picture(&document).is_empty());
+        assert!(!picture(&document).is_empty(), "{losses:?}");
+        let EntityType::Line(line) = document
+            .entities_in_block(picture(&document))
+            .next()
+            .unwrap()
+        else {
+            panic!()
+        };
+        let expected = if tilted {
+            [16., 8.1, 0.]
+        } else {
+            [0.3, 0., 0.]
+        };
+        for (a, b) in [line.start.x, line.start.y, line.start.z]
+            .into_iter()
+            .zip(expected)
+        {
+            assert!((a - b).abs() <= 1e-7, "{line:?}");
+        }
     }
+}
+
+#[test]
+fn arbitrary_picture_member_xdata_is_a_located_metadata_loss() {
+    use opencaddocument::acadrust::xdata::{ExtendedDataRecord, XDataValue};
+    let (mut document, _) = read(&source());
+    let mut member = line();
+    let mut record = ExtendedDataRecord::new("SYNTHETIC_LINKS");
+    record.add_value(XDataValue::String("meaningful-source-reference".into()));
+    member.common_mut().extended_data.add_record(record);
+    add_picture(&mut document, vec![member]);
+    let original = document.clone();
+    let (bytes, losses) = Ifcx.write(&document).unwrap();
+    assert_eq!(document, original);
+    assert!(dimension(&load(&bytes)).graphics.is_some(), "{losses:?}");
+    assert!(
+        losses.iter().any(|l| l.message.contains("graphics")
+            && l.message.contains("p0")
+            && l.message.contains("SYNTHETIC_LINKS")
+            && l.message.contains("XDATA")),
+        "{losses:?}"
+    );
+}
+
+#[test]
+fn canvas_background_mtext_retains_layout_and_diagnoses_dormant_colour() {
+    use opencaddocument::acadrust::entities::{LineSpacingStyle, MText};
+    use opencaddocument::acadrust::types::Color;
+    for canvas in [true, false] {
+        let (mut document, _) = read(&source());
+        let mut text = MText::new();
+        text.value = "1234".into();
+        text.insertion_point = Vector3::new(16.1, 8.2, 0.);
+        text.height = 125.;
+        text.rectangle_width = 731.25;
+        text.line_spacing_factor = 1.1425788497217069;
+        text.line_spacing_style = LineSpacingStyle::Exactly;
+        text.background_fill_flags = if canvas { 3 } else { 1 };
+        text.background_color = Color::Rgb {
+            r: 200,
+            g: 200,
+            b: 200,
+        };
+        add_picture(&mut document, vec![EntityType::MText(Box::new(text))]);
+        let (bytes, losses) = Ifcx.write(&document).unwrap();
+        assert!(dimension(&load(&bytes)).graphics.is_some(), "{losses:?}");
+        let (back, _) = Ifcx.read(&bytes).unwrap();
+        let EntityType::MText(t) = back.entities_in_block(picture(&back)).next().unwrap() else {
+            panic!()
+        };
+        assert!((t.line_spacing_factor - 1.1425788497217069).abs() * t.height < 1e-7);
+        assert_eq!(t.background_fill_flags, if canvas { 3 } else { 1 });
+        if canvas {
+            assert!(
+                losses
+                    .iter()
+                    .any(|l| l.message.contains("background colour")),
+                "{losses:?}"
+            );
+        } else {
+            assert_eq!(
+                t.background_color,
+                Color::Rgb {
+                    r: 200,
+                    g: 200,
+                    b: 200
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn rotated_mtext_picture_keeps_direction_anchor_and_native_dimension() {
+    use opencaddocument::acadrust::entities::MText;
+    for angle in [std::f64::consts::FRAC_PI_2, -0.37, 2.6] {
+        let (mut document, _) = read(&source());
+        let mut text = MText::new();
+        text.value = "rotated synthetic dimension".into();
+        text.height = 2.5;
+        text.rectangle_width = 40.;
+        text.insertion_point = Vector3::new(12345.123456789, -456.987654321, 3.);
+        text.rotation = if angle == 2.6 { 0. } else { angle };
+        text.dwg_x_direction = Some(Vector3::new(angle.cos(), angle.sin(), 0.));
+        add_picture(
+            &mut document,
+            vec![EntityType::MText(Box::new(text.clone()))],
+        );
+        let (bytes, losses) = Ifcx.write(&document).unwrap();
+        assert!(dimension(&load(&bytes)).graphics.is_some(), "{losses:?}");
+        if angle == 2.6 {
+            assert!(
+                losses
+                    .iter()
+                    .any(|l| l.message.contains("inactive MText angle")),
+                "{losses:?}"
+            );
+        }
+        let (back, losses) = Ifcx.read(&bytes).unwrap();
+        assert!(!picture(&back).is_empty(), "{losses:?}");
+        let EntityType::MText(t) = back.entities_in_block(picture(&back)).next().unwrap() else {
+            panic!()
+        };
+        assert!((t.insertion_point - text.insertion_point).length() < 1e-7);
+        let direction = t
+            .dwg_x_direction
+            .unwrap_or_else(|| Vector3::new(t.rotation.cos(), t.rotation.sin(), 0.));
+        assert!((direction - text.dwg_x_direction.unwrap()).length() < 1e-12);
+    }
+}
+
+#[test]
+fn excessive_translation_rounding_and_visual_common_state_still_drop_atomically() {
+    let mut drawing = source();
+    dimension_mut(&mut drawing).placement.origin = [1e16, 0., 0.];
+    dimension_mut(&mut drawing).graphics = Some(graphics(vec![part(
+        IfccadDimensionGraphicsKind::LineSegment {
+            start: [0.1, 0., 0.],
+            end: [1., 0., 0.],
+        },
+    )]));
+    let (document, losses) = read(&drawing);
+    assert!(picture(&document).is_empty(), "{losses:?}");
+    assert!(
+        losses.iter().any(|l| l.message.contains("budget")),
+        "{losses:?}"
+    );
+    let (mut document, _) = read(&source());
+    let mut member = line();
+    member.common_mut().shadow_flags = 1;
+    add_picture(&mut document, vec![line(), member]);
+    assert!(picture_dropped(&document));
 }
 
 #[test]

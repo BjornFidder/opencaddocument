@@ -7,6 +7,7 @@ use ifccad::{
     IfccadDimensionGraphicsPurpose as Purpose, IfccadLayout,
 };
 use std::collections::BTreeSet;
+mod geometry;
 
 enum Problem {
     Unsupported(String),
@@ -33,7 +34,7 @@ fn finite(value: f64) -> Prepared<f64> {
     }
 }
 
-/// Error-free TwoSum: accept only a finite, exactly representable translation.
+/// Error-free TwoSum: bound translation rounding in drawing units.
 fn add(a: f64, b: f64) -> Prepared<f64> {
     finite(a)?;
     finite(b)?;
@@ -41,11 +42,11 @@ fn add(a: f64, b: f64) -> Prepared<f64> {
     let bv = finite(sum - a)?;
     let av = finite(sum - bv)?;
     let error = finite((a - av) + (b - bv))?;
-    if error == 0.0 {
+    if error.abs() <= geometry::POSITION {
         Ok(sum)
     } else {
         Err(unsupported(
-            "coordinate translation requires rounding outside the exact picture profile",
+            "coordinate translation exceeds the absolute picture budget",
         ))
     }
 }
@@ -60,16 +61,12 @@ fn frame(p: &mut IfccadPlacement, offset: [f64; 3]) -> Prepared<()> {
     for v in p.origin.into_iter().chain(p.x_axis).chain(p.y_axis) {
         finite(v)?;
     }
-    if p.x_axis != [1., 0., 0.] || p.y_axis != [0., 1., 0.] {
-        return Err(unsupported(
-            "picture frame is outside the exact canonical +Z profile",
-        ));
-    }
+    geometry::validate_frame(p)?;
     p.origin = point(p.origin, offset)?;
     Ok(())
 }
 
-/// Factor translations only; all other typed parameters must survive exactly.
+/// Factor equivalent XY origins; retain other qualified orthonormal frames.
 fn canonical(mut kind: IfccadEntityKind, offset: [f64; 3]) -> Prepared<IfccadEntityKind> {
     match &mut kind {
         IfccadEntityKind::LineSegment { start, end } => {
@@ -114,12 +111,14 @@ fn canonical(mut kind: IfccadEntityKind, offset: [f64; 3]) -> Prepared<IfccadEnt
             ..
         } => {
             frame(placement, offset)?;
-            for v in vertices.iter_mut() {
-                v[0] = add(v[0], placement.origin[0])?;
-                v[1] = add(v[1], placement.origin[1])?;
+            if placement.x_axis == [1., 0., 0.] && placement.y_axis == [0., 1., 0.] {
+                for v in vertices.iter_mut() {
+                    v[0] = add(v[0], placement.origin[0])?;
+                    v[1] = add(v[1], placement.origin[1])?;
+                }
+                placement.origin[0] = 0.0;
+                placement.origin[1] = 0.0;
             }
-            placement.origin[0] = 0.0;
-            placement.origin[1] = 0.0;
             if bulges.is_empty() {
                 bulges.resize(vertices.len(), 0.0);
             }
@@ -157,12 +156,14 @@ fn canonical(mut kind: IfccadEntityKind, offset: [f64; 3]) -> Prepared<IfccadEnt
         IfccadEntityKind::Solid(q) | IfccadEntityKind::Trace(q) => {
             frame(&mut q.placement, offset)?;
             finite(q.thickness)?;
-            for v in &mut q.corners {
-                v[0] = add(v[0], q.placement.origin[0])?;
-                v[1] = add(v[1], q.placement.origin[1])?;
+            if q.placement.x_axis == [1., 0., 0.] && q.placement.y_axis == [0., 1., 0.] {
+                for v in &mut q.corners {
+                    v[0] = add(v[0], q.placement.origin[0])?;
+                    v[1] = add(v[1], q.placement.origin[1])?;
+                }
+                q.placement.origin[0] = 0.;
+                q.placement.origin[1] = 0.;
             }
-            q.placement.origin[0] = 0.;
-            q.placement.origin[1] = 0.;
         }
         IfccadEntityKind::Text(t) => {
             frame(&mut t.placement, offset)?;
@@ -366,9 +367,9 @@ fn native_entity(
     if !losses.0.is_empty() || before != back.losses.0 || round_appearance != *appearance {
         return Err(unsupported("part appearance or content would change"));
     }
-    if canonical(actual, [0.; 3])? != expected {
+    if !geometry::native(&canonical(actual, [0.; 3])?, &expected) {
         return Err(unsupported(
-            "part parameters do not survive the exact inverse mapping",
+            "part parameters exceed the qualified inverse mapping",
         ));
     }
     Ok(entity)
@@ -441,6 +442,11 @@ pub(super) fn import(
     let mut prepare = || -> Prepared<Vec<EntityType>> {
         let mut placement = source.placement.clone();
         frame(&mut placement, [0.; 3])?;
+        if placement_in(&placement).1 != Vector3::new(0., 0., 1.) {
+            return Err(unsupported(
+                "picture dimension plane is outside the qualified +Z profile",
+            ));
+        }
         let root_layer = names
             .layers
             .get(&layer_id)
@@ -497,7 +503,7 @@ pub(super) fn import(
                     &mut metadata,
                 )?;
             }
-            let kind = canonical(original, placement.origin)?;
+            let kind = geometry::transform(original, &placement, false)?;
             parts.push(native_entity(
                 kind,
                 &p.appearance,
@@ -574,6 +580,7 @@ fn common_supported(source: &EntityCommon) -> Prepared<()> {
     extra.invisible = default.invisible;
     extra.entity_mode = None;
     extra.raw_record = None;
+    extra.extended_data = Default::default();
     if extra != default {
         return Err(unsupported(
             "picture member has unsupported common metadata",
@@ -850,7 +857,7 @@ fn record_metadata(document: &Document, record: &BlockRecord, marker: bool) -> P
 fn cad_part(
     w: &mut Writer<'_>,
     entity: &EntityType,
-    offset: [f64; 3],
+    placement: &IfccadPlacement,
     active: &mut BTreeSet<String>,
     done: &mut BTreeSet<String>,
 ) -> Prepared<Part> {
@@ -865,7 +872,7 @@ fn cad_part(
     if w.losses.0 != before {
         return Err(unsupported("picture member conversion loses content"));
     }
-    let kind = canonical(native, offset)?;
+    let kind = geometry::transform(native, placement, true)?;
     let common = entity.common();
     let layer = *w
         .layers
@@ -873,7 +880,7 @@ fn cad_part(
         .ok_or_else(|| invalid("missing CAD picture layer"))?;
     let appearance = appearance_out(common, &w.line_patterns, &mut w.losses);
     let lookup = names(w);
-    let owner_kind = canonical(kind.clone(), offset.map(|v| -v))?;
+    let owner_kind = geometry::transform(kind.clone(), placement, false)?;
     let mut issues = Losses::default();
     let mut back = entity_in(&owner_kind, &lookup, &mut issues)
         .ok_or_else(|| unsupported("picture part cannot be reconstructed"))?;
@@ -887,6 +894,7 @@ fn cad_part(
     actual_common.linetype_handle = common.linetype_handle;
     actual_common.entity_mode = common.entity_mode;
     actual_common.raw_record = common.raw_record.clone();
+    actual_common.extended_data = common.extended_data.clone();
     actual_common.linetype_scale = common.linetype_scale;
     actual_common.invisible = common.invisible;
     if common.linetype.is_empty()
@@ -934,10 +942,48 @@ fn cad_part(
         }
         _ => {}
     }
-    if back != *entity {
+    if !geometry::cad(&back, entity) {
         return Err(unsupported(
-            "CAD picture parameters do not survive the exact inverse mapping",
+            "CAD picture parameters exceed the qualified inverse mapping",
         ));
+    }
+    for record in common.extended_data.records() {
+        w.losses.note(format!(
+            "picture member {} XDATA application {} omitted",
+            common.handle, record.application_name
+        ));
+    }
+    if common.extended_data.records().is_empty() && common.extended_data != Default::default() {
+        w.losses.note(format!(
+            "picture member {} undecoded XDATA omitted",
+            common.handle
+        ));
+    }
+    if let (EntityType::MText(a), EntityType::MText(b)) = (&back, entity) {
+        if b.dwg_x_direction.is_some()
+            && (a.rotation - b.rotation)
+                .sin()
+                .atan2((a.rotation - b.rotation).cos())
+                .abs()
+                > 1e-12
+        {
+            w.losses.note(format!(
+                "picture member {} inactive MText angle omitted (explicit direction selected)",
+                common.handle
+            ));
+        }
+        if a.background_color != b.background_color {
+            w.losses.note(format!(
+                "picture member {} inactive MText background colour omitted (canvas selected)",
+                common.handle
+            ));
+        }
+        if a.extents_width != b.extents_width || a.extents_height != b.extents_height {
+            w.losses.note(format!(
+                "picture member {} cached MText extents omitted",
+                common.handle
+            ));
+        }
     }
     Ok(Part {
         kind: G::try_from(kind).map_err(|e| Problem::Invalid(Box::new(e)))?,
@@ -978,7 +1024,17 @@ fn cad_block(
     record_metadata(w.document, record, true)?;
     let entities: Vec<_> = w.document.entities_in_block(name).cloned().collect();
     for e in entities {
-        cad_part(w, &e, [0.; 3], active, done)?;
+        cad_part(
+            w,
+            &e,
+            &IfccadPlacement {
+                origin: [0.; 3],
+                x_axis: [1., 0., 0.],
+                y_axis: [0., 1., 0.],
+            },
+            active,
+            done,
+        )?;
     }
     active.remove(&key);
     done.insert(key);
@@ -1032,14 +1088,25 @@ pub(super) fn capture(
         )?;
         record_metadata(staged.document, record, false)?;
         for (index, e) in entities.into_iter().enumerate() {
-            match cad_part(
-                &mut staged,
-                &e,
-                p.origin.map(|v| -v),
-                &mut active,
-                &mut done,
-            ) {
-                Ok(part) => parts.push(part),
+            let losses_before = staged.losses.0.clone();
+            match cad_part(&mut staged, &e, &p, &mut active, &mut done) {
+                Ok(part) => {
+                    parts.push(part);
+                    let notes: Vec<_> = staged
+                        .losses
+                        .0
+                        .keys()
+                        .filter(|k| !losses_before.contains_key(*k))
+                        .cloned()
+                        .collect();
+                    for note in notes {
+                        let count = staged.losses.0.remove(&note).unwrap();
+                        staged.losses.0.insert(
+                            format!("dimension {} graphics p{index}: {note}", base.common.handle),
+                            count,
+                        );
+                    }
+                }
                 Err(Problem::Unsupported(reason)) => {
                     return Err(Problem::Unsupported(format!("p{index}: {reason}")))
                 }
@@ -1052,6 +1119,7 @@ pub(super) fn capture(
     // its reason; the drawing around it still saves.
     let reason = match prepare() {
         Ok(parts) => {
+            w.losses.0.extend(staged.losses.0);
             w.drawing.blocks.extend(staged.drawing.blocks);
             w.blocks = staged.blocks;
             w.drawing.id_counters = staged.drawing.id_counters;
