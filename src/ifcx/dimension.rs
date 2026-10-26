@@ -20,20 +20,20 @@ use acadrust::tables::DimStyle;
 use acadrust::xdata::{ExtendedDataRecord, XDataValue};
 use ifccad::dimension::{
     evaluate_dimension, resolve_dimension_settings, validate_dimension_definition,
-    validate_dimension_settings, validate_dimension_text_placement,
-    DimensionAlternateChoice, DimensionAlternateNumberSettings, DimensionAngleFormat,
-    DimensionAppearanceChoice, DimensionArcSymbol, DimensionBackground, DimensionCenterMark,
-    DimensionDefinition, DimensionDistanceFormat, DimensionExtensionLength,
-    DimensionFactorApplication, DimensionFitPlacement, DimensionFractionLayout,
-    DimensionLabel, DimensionLabelPart, DimensionLineSpacing, DimensionMarker,
-    DimensionMeasurement, DimensionPadding, DimensionPointSelector, DimensionRole,
-    DimensionStyleSettings, DimensionTextMovement, DimensionTextOrientation,
-    DimensionTextPlacement, DimensionToleranceSettings, DimensionZeroSuppression,
+    validate_dimension_settings, validate_dimension_text_placement, DimensionAlternateChoice,
+    DimensionAlternateNumberSettings, DimensionAngleFormat, DimensionAppearanceChoice,
+    DimensionArcSymbol, DimensionBackground, DimensionCenterMark, DimensionDefinition,
+    DimensionDistanceFormat, DimensionExtensionLength, DimensionFactorApplication,
+    DimensionFitPlacement, DimensionFractionLayout, DimensionLabel, DimensionLabelPart,
+    DimensionLineSpacing, DimensionMarker, DimensionMeasurement, DimensionPadding,
+    DimensionPointSelector, DimensionRole, DimensionStyleSettings, DimensionTextMovement,
+    DimensionTextOrientation, DimensionTextPlacement, DimensionToleranceSettings,
+    DimensionZeroSuppression,
 };
 use ifccad::text::MTextAttachment;
 use ifccad::{
-    IfccadDimension, IfccadDimensionAssociation, IfccadDimensionOverrides,
-    IfccadDimensionSettings, IfccadDimensionStyle,
+    IfccadDimension, IfccadDimensionAssociation, IfccadDimensionOverrides, IfccadDimensionSettings,
+    IfccadDimensionStyle,
 };
 
 use super::*;
@@ -210,7 +210,10 @@ fn settings_out(style: &DimStyle, writer: &mut Writer) -> Option<IfccadDimension
             (style.dimblk1, &style.dimblk1_name),
             (style.dimblk2, &style.dimblk2_name),
         ),
-        false => ((style.dimblk, &style.dimblk_name), (style.dimblk, &style.dimblk_name)),
+        false => (
+            (style.dimblk, &style.dimblk_name),
+            (style.dimblk, &style.dimblk_name),
+        ),
     };
     v.arrows.first = marker_out(first.0, first.1, writer);
     v.arrows.second = marker_out(second.0, second.1, writer);
@@ -317,10 +320,22 @@ fn settings_out(style: &DimStyle, writer: &mut Writer) -> Option<IfccadDimension
     if style.dimalt {
         let (prefix, suffix) = prefix_suffix(&style.dimapost);
         let (format, fraction_layout) = match style.dimaltu {
-            4 => (DimensionDistanceFormat::Architectural, DimensionFractionLayout::Horizontal),
-            5 => (DimensionDistanceFormat::Fractional, DimensionFractionLayout::Horizontal),
-            6 => (DimensionDistanceFormat::Architectural, DimensionFractionLayout::Inline),
-            7 => (DimensionDistanceFormat::Fractional, DimensionFractionLayout::Inline),
+            4 => (
+                DimensionDistanceFormat::Architectural,
+                DimensionFractionLayout::Horizontal,
+            ),
+            5 => (
+                DimensionDistanceFormat::Fractional,
+                DimensionFractionLayout::Horizontal,
+            ),
+            6 => (
+                DimensionDistanceFormat::Architectural,
+                DimensionFractionLayout::Inline,
+            ),
+            7 => (
+                DimensionDistanceFormat::Fractional,
+                DimensionFractionLayout::Inline,
+            ),
             code => (distance_format(code), DimensionFractionLayout::Inline),
         };
         v.numbers.alternate = Some(DimensionAlternateNumberSettings {
@@ -369,7 +384,12 @@ fn settings_out(style: &DimStyle, writer: &mut Writer) -> Option<IfccadDimension
 }
 
 /// IFCX settings as a dimension style named `name`.
-fn style_in(name: &str, v: &IfccadDimensionSettings, names: &Names, document: &Document) -> DimStyle {
+fn style_in(
+    name: &str,
+    v: &IfccadDimensionSettings,
+    names: &Names,
+    document: &Document,
+) -> DimStyle {
     let mut style = document
         .dim_styles
         .get(name)
@@ -381,7 +401,8 @@ fn style_in(name: &str, v: &IfccadDimensionSettings, names: &Names, document: &D
     style.dimsd2 = v.dimension_line.suppress_second;
     (style.dimclrd, style.dimclrd_true_color) = color_choice_in(&v.dimension_line.appearance.color);
     style.dimlwd = weight_choice_in(&v.dimension_line.appearance.line_weight);
-    style.dimltex_handle = pattern_choice_in(&v.dimension_line.appearance.line_pattern, names, document);
+    style.dimltex_handle =
+        pattern_choice_in(&v.dimension_line.appearance.line_pattern, names, document);
     let first = &v.extension_lines.first;
     let second = &v.extension_lines.second;
     style.dimexo = first.offset;
@@ -427,7 +448,9 @@ fn style_in(name: &str, v: &IfccadDimensionSettings, names: &Names, document: &D
     style.dimtxt = v.text.height;
     style.dimgap = v.text.gap;
     style.dimtad = match v.text.attachment {
-        MTextAttachment::MiddleCenter | MTextAttachment::MiddleLeft | MTextAttachment::MiddleRight => 0,
+        MTextAttachment::MiddleCenter
+        | MTextAttachment::MiddleLeft
+        | MTextAttachment::MiddleRight => 0,
         _ => 1,
     };
     style.dimtih = v.text.inside_orientation == DimensionTextOrientation::Horizontal;
@@ -587,14 +610,19 @@ fn post(prefix: &str, suffix: &str) -> String {
     }
 }
 
-fn color_choice_out(index: i16, true_color: Option<Color>) -> DimensionAppearanceChoice<IfccadColor> {
+fn color_choice_out(
+    index: i16,
+    true_color: Option<Color>,
+) -> DimensionAppearanceChoice<IfccadColor> {
     if let Some(color) = true_color.and_then(color_out) {
         return DimensionAppearanceChoice::Explicit(color);
     }
     match index {
         256 => DimensionAppearanceChoice::ByLayer,
-        1..=255 => color_out(Color::Index(index as u8))
-            .map_or(DimensionAppearanceChoice::InheritEntity, DimensionAppearanceChoice::Explicit),
+        1..=255 => color_out(Color::Index(index as u8)).map_or(
+            DimensionAppearanceChoice::InheritEntity,
+            DimensionAppearanceChoice::Explicit,
+        ),
         _ => DimensionAppearanceChoice::InheritEntity,
     }
 }
@@ -635,7 +663,11 @@ fn pattern_choice_out(
         .line_types
         .iter()
         .find(|linetype| !handle.is_null() && linetype.handle == handle)
-        .and_then(|linetype| writer.line_patterns.get(&linetype.name.to_ascii_lowercase()))
+        .and_then(|linetype| {
+            writer
+                .line_patterns
+                .get(&linetype.name.to_ascii_lowercase())
+        })
         .map_or(DimensionAppearanceChoice::InheritEntity, |id| {
             DimensionAppearanceChoice::Explicit(*id)
         })
@@ -673,7 +705,9 @@ fn marker_out(handle: Handle, name: &str, writer: &mut Writer) -> DimensionMarke
     match writer.block(&block) {
         Ok(Some(id)) => DimensionMarker::LocalBlock { block: id },
         _ => {
-            writer.losses.note(format!("the dimension arrowhead {block}"));
+            writer
+                .losses
+                .note(format!("the dimension arrowhead {block}"));
             DimensionMarker::ClosedFilled
         }
     }
@@ -681,17 +715,26 @@ fn marker_out(handle: Handle, name: &str, writer: &mut Writer) -> DimensionMarke
 
 /// A marker as an arrowhead block handle and name; built-in ones by name,
 /// for the CAD to supply.
-fn marker_in(marker: &DimensionMarker<u64>, names: &Names, document: &Document) -> (Handle, String) {
+fn marker_in(
+    marker: &DimensionMarker<u64>,
+    names: &Names,
+    document: &Document,
+) -> (Handle, String) {
     let name = match marker {
         DimensionMarker::ClosedFilled => return (Handle::NULL, String::new()),
-        DimensionMarker::LocalBlock { block } => names.blocks.get(block).cloned().unwrap_or_default(),
+        DimensionMarker::LocalBlock { block } => {
+            names.blocks.get(block).cloned().unwrap_or_default()
+        }
         other => MARKERS
             .iter()
             .find(|(_, m)| m == other)
             .map(|(name, _)| name.to_string())
             .unwrap_or_default(),
     };
-    let handle = document.block_records.get(&name).map_or(Handle::NULL, |r| r.handle);
+    let handle = document
+        .block_records
+        .get(&name)
+        .map_or(Handle::NULL, |r| r.handle);
     (handle, name)
 }
 
@@ -700,12 +743,16 @@ pub(super) fn write_styles(writer: &mut Writer) -> Result<(), Error> {
     let document = writer.document;
     for style in document.dim_styles.iter() {
         let Some(settings) = settings_out(style, writer) else {
-            writer.losses.note(format!("dimension style {}", style.name));
+            writer
+                .losses
+                .note(format!("dimension style {}", style.name));
             continue;
         };
         let id = writer.drawing.id_counters.allocate_dimension_style_id()?;
         let key = style.name.to_ascii_lowercase();
-        writer.dim_styles.insert(key.clone(), (id, settings.clone()));
+        writer
+            .dim_styles
+            .insert(key.clone(), (id, settings.clone()));
         writer.drawing.dimension_styles.push(IfccadDimensionStyle {
             id,
             name: style.name.clone(),
@@ -725,7 +772,10 @@ pub(super) fn read_styles(
 ) -> Result<(), Error> {
     for style in &drawing.dimension_styles {
         if !style.type_overrides.is_empty() {
-            losses.note(format!("per-kind settings of dimension style {}", style.name));
+            losses.note(format!(
+                "per-kind settings of dimension style {}",
+                style.name
+            ));
         }
         let mut converted = style_in(&style.name, &style.settings, names, document);
         match document.dim_styles.get_mut(&style.name) {
@@ -738,14 +788,24 @@ pub(super) fn read_styles(
                 document.dim_styles.add(converted)?;
             }
         }
-        names.dim_styles.insert(style.id, (style.name.clone(), style.settings.clone(), style.type_overrides.clone()));
+        names.dim_styles.insert(
+            style.id,
+            (
+                style.name.clone(),
+                style.settings.clone(),
+                style.type_overrides.clone(),
+            ),
+        );
     }
     Ok(())
 }
 
 // ---------------------------------------------------------------- dimensions
 
-pub(super) fn dimension_out(writer: &mut Writer, dimension: &Dimension) -> Option<IfccadEntityKind> {
+pub(super) fn dimension_out(
+    writer: &mut Writer,
+    dimension: &Dimension,
+) -> Option<IfccadEntityKind> {
     let base = dimension.base();
     let (first, second, line, rotation, oblique) = match dimension {
         Dimension::Linear(d) => (
@@ -755,7 +815,13 @@ pub(super) fn dimension_out(writer: &mut Writer, dimension: &Dimension) -> Optio
             Some(d.rotation),
             d.ext_line_rotation,
         ),
-        Dimension::Aligned(d) => (d.first_point, d.second_point, d.definition_point, None, d.ext_line_rotation),
+        Dimension::Aligned(d) => (
+            d.first_point,
+            d.second_point,
+            d.definition_point,
+            None,
+            d.ext_line_rotation,
+        ),
         _ => return None,
     };
     let key = base.style_name.to_ascii_lowercase();
@@ -765,7 +831,10 @@ pub(super) fn dimension_out(writer: &mut Writer, dimension: &Dimension) -> Optio
     };
     let (style_id, base_settings) = writer.dim_styles.get(&key)?.clone();
     let document = writer.document;
-    let style = document.dim_styles.iter().find(|s| s.name.eq_ignore_ascii_case(&key))?;
+    let style = document
+        .dim_styles
+        .iter()
+        .find(|s| s.name.eq_ignore_ascii_case(&key))?;
 
     let normal = base.normal;
     let origin = to_ocs(line, normal);
@@ -783,7 +852,9 @@ pub(super) fn dimension_out(writer: &mut Writer, dimension: &Dimension) -> Optio
         },
         None => {
             if oblique != 0.0 {
-                writer.losses.note("oblique extension lines of aligned dimensions");
+                writer
+                    .losses
+                    .note("oblique extension lines of aligned dimensions");
             }
             DimensionDefinition::Aligned {
                 first_point: local(first),
@@ -836,12 +907,15 @@ pub(super) fn dimension_out(writer: &mut Writer, dimension: &Dimension) -> Optio
     if base.horizontal_direction != 0.0 {
         writer.losses.note("dimension text direction");
     }
-    if base.dimension_type != DimensionType::Linear && base.dimension_type != DimensionType::Aligned {
+    if base.dimension_type != DimensionType::Linear && base.dimension_type != DimensionType::Aligned
+    {
         return None;
     }
     let associations = associations_out(document, base.common.handle);
     if !associations.is_empty() {
-        writer.dimension_sources.insert(base.common.handle, associations);
+        writer
+            .dimension_sources
+            .insert(base.common.handle, associations);
     }
     Some(IfccadEntityKind::Dimension(Box::new(IfccadDimension {
         placement: placement_out(origin, normal, 0.0),
@@ -866,7 +940,11 @@ pub(super) fn dimension_in(
     let (sin, cos) = frame.sin_cos();
     // Frame coordinates to the OCS of the normal, then to the world.
     let ocs = |[u, v, w]: [f64; 3]| {
-        Vector3::new(origin.x + u * cos - v * sin, origin.y + u * sin + v * cos, origin.z + w)
+        Vector3::new(
+            origin.x + u * cos - v * sin,
+            origin.y + u * sin + v * cos,
+            origin.z + w,
+        )
     };
     let world = |p: [f64; 3]| ocs_to_world(ocs(p), normal);
     let (first, second) = source.definition.reference_points();
@@ -892,7 +970,8 @@ pub(super) fn dimension_in(
             let mut d = DimensionLinear::new(world(first), world(second));
             d.definition_point = line;
             d.rotation = direction_angle + frame;
-            d.ext_line_rotation = extension_direction_angle.map_or(0.0, |angle| angle - direction_angle);
+            d.ext_line_rotation =
+                extension_direction_angle.map_or(0.0, |angle| angle - direction_angle);
             Dimension::Linear(d)
         }
         DimensionDefinition::Aligned { .. } => {
@@ -1031,12 +1110,14 @@ fn label_out(text: Option<&str>) -> DimensionLabel {
         Some(" ") => return DimensionLabel::Suppressed,
         Some(text) => text,
     };
-    let literal = |text: &str| DimensionLabelPart::Literal(vec![TextRun {
-        text: text.to_string(),
-        underline: false,
-        overline: false,
-        strike_through: false,
-    }]);
+    let literal = |text: &str| {
+        DimensionLabelPart::Literal(vec![TextRun {
+            text: text.to_string(),
+            underline: false,
+            overline: false,
+            strike_through: false,
+        }])
+    };
     let mut parts = Vec::new();
     let mut rest = text;
     while let Some((before, after)) = rest.split_once("<>") {
@@ -1194,7 +1275,11 @@ pub(super) fn associations_in(
 ) {
     let scopes = drawing.blocks.iter().map(|block| &block.entities);
     let papers = drawing.paper_layouts.iter().map(|paper| &paper.entities);
-    for entity in scopes.chain(papers).chain([&drawing.model.entities]).flatten() {
+    for entity in scopes
+        .chain(papers)
+        .chain([&drawing.model.entities])
+        .flatten()
+    {
         let Some(IfccadNativeEntity {
             id,
             kind: IfccadEntityKind::Dimension(dimension),
@@ -1245,6 +1330,8 @@ pub(super) fn associations_in(
         object.handle = document.allocate_handle();
         object.owner = handle;
         object.data = AssociativeData::DimensionAssociation(association);
-        document.objects.insert(object.handle, ObjectType::Associative(object));
+        document
+            .objects
+            .insert(object.handle, ObjectType::Associative(object));
     }
 }

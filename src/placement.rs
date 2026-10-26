@@ -117,7 +117,11 @@ mod tests {
                 Vector3::new(next(), next(), next()).normalize()
             };
             let origin = Vector3::new(next() * 1e6, next() * 1e6, next() * 1e3);
-            out.push(Placement::from_ocs(origin, normal, next() * std::f64::consts::PI));
+            out.push(Placement::from_ocs(
+                origin,
+                normal,
+                next() * std::f64::consts::PI,
+            ));
         }
         out
     }

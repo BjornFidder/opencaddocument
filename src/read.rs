@@ -31,7 +31,9 @@ impl<R: Read + Seek> DwgReader<R> {
     }
 
     pub fn from_stream_with_options(stream: R, options: DwgReadOptions) -> Self {
-        Self(acadrust::DwgReader::from_stream_with_options(stream, options))
+        Self(acadrust::DwgReader::from_stream_with_options(
+            stream, options,
+        ))
     }
 
     pub fn read(&mut self) -> Result<Document, DxfError> {

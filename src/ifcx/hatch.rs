@@ -63,17 +63,14 @@ pub(super) fn hatch_out(hatch: &Hatch, losses: &mut Losses) -> Option<IfccadEnti
     } else {
         HatchFill::LinePattern(pattern_out(hatch)?)
     };
-    let gradient = match validate_hatch_gradient(
-        fill == HatchFill::Gradient,
-        gradient.as_ref(),
-        concrete,
-    ) {
-        Ok(()) => gradient,
-        Err(_) => {
-            losses.note("a hatch gradient");
-            None
-        }
-    };
+    let gradient =
+        match validate_hatch_gradient(fill == HatchFill::Gradient, gradient.as_ref(), concrete) {
+            Ok(()) => gradient,
+            Err(_) => {
+                losses.note("a hatch gradient");
+                None
+            }
+        };
     let fill = match (fill, &gradient) {
         (HatchFill::Gradient, None) => HatchFill::Solid,
         (fill, _) => fill,
@@ -465,7 +462,12 @@ fn pattern_out(hatch: &Hatch) -> Option<HatchLinePattern> {
         return None;
     }
     let (sin, cos) = (-rotation).sin_cos();
-    let unturn = |v: Vector2| ((v.x * cos - v.y * sin) / scale, (v.x * sin + v.y * cos) / scale);
+    let unturn = |v: Vector2| {
+        (
+            (v.x * cos - v.y * sin) / scale,
+            (v.x * sin + v.y * cos) / scale,
+        )
+    };
     let mut families = Vec::new();
     for line in &hatch.pattern.lines {
         let angle = snap(line.angle - rotation, ANGLE_STEP);
@@ -515,7 +517,10 @@ fn pattern_in(pattern: &HatchLinePattern, frame: &Frame2, hatch: &mut Hatch) {
         let (d_sin, d_cos) = family.angle.sin_cos();
         let [along, across] = family.offset;
         let base = turn((family.base_point[0], family.base_point[1]));
-        let offset = turn((along * d_cos - across * d_sin, along * d_sin + across * d_cos));
+        let offset = turn((
+            along * d_cos - across * d_sin,
+            along * d_sin + across * d_cos,
+        ));
         lines.push(HatchPatternLine {
             angle: family.angle + rotation,
             base_point: frame.point([base[0] + pattern.origin[0], base[1] + pattern.origin[1]]),

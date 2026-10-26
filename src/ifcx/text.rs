@@ -8,11 +8,11 @@
 use acadrust::entities::{AttachmentPoint, DrawingDirection, LineSpacingStyle, MText};
 use ifccad::text::{
     validate_background, validate_font_request, validate_mtext_columns,
-    validate_mtext_effective_formats, validate_paragraph_format,
-    CharacterFormat, MTextAttachment, MTextBackground, MTextColumnHeight, MTextColumns,
-    MTextFill, MTextFlow, MTextInline, MTextParagraph, MTextValueContext, ParagraphFormat,
-    TextColor, TextHeight, TextLineSpacing, TextPadding, TextParagraphAlignment, TextPosition,
-    TextStack, TextStackKind, TextTabAlignment, TextTabStop,
+    validate_mtext_effective_formats, validate_paragraph_format, CharacterFormat, MTextAttachment,
+    MTextBackground, MTextColumnHeight, MTextColumns, MTextFill, MTextFlow, MTextInline,
+    MTextParagraph, MTextValueContext, ParagraphFormat, TextColor, TextHeight, TextLineSpacing,
+    TextPadding, TextParagraphAlignment, TextPosition, TextStack, TextStackKind, TextTabAlignment,
+    TextTabStop,
 };
 use ifccad::IfccadMText;
 
@@ -55,9 +55,7 @@ pub(super) fn text_runs(value: &str) -> Vec<TextRun> {
         }
         let [underline, overline, strike_through] = decorations;
         match runs.last_mut() {
-            Some(run)
-                if [run.underline, run.overline, run.strike_through] == decorations =>
-            {
+            Some(run) if [run.underline, run.overline, run.strike_through] == decorations => {
                 run.text.push(c)
             }
             _ => runs.push(TextRun {
@@ -153,7 +151,9 @@ pub(super) fn parse_mtext(value: &str) -> Vec<Paragraph> {
                     '\\' | '{' | '}' => literal(&mut paragraphs, &format, code),
                     '~' => literal(&mut paragraphs, &format, '\u{a0}'),
                     'P' => new_paragraph(&mut paragraphs),
-                    'N' => current(&mut paragraphs).inlines.push(MTextInline::ColumnBreak),
+                    'N' => current(&mut paragraphs)
+                        .inlines
+                        .push(MTextInline::ColumnBreak),
                     'L' | 'l' => format.underline = Some(code == 'L'),
                     'O' | 'o' => format.overline = Some(code == 'O'),
                     'K' | 'k' => format.strike_through = Some(code == 'K'),
@@ -172,7 +172,10 @@ pub(super) fn parse_mtext(value: &str) -> Vec<Paragraph> {
                         };
                         i = next;
                         match code {
-                            'p' => parse_paragraph(&body, &mut current(&mut paragraphs).paragraph_format),
+                            'p' => parse_paragraph(
+                                &body,
+                                &mut current(&mut paragraphs).paragraph_format,
+                            ),
                             'S' => stack(&body, &format, current(&mut paragraphs)),
                             _ => apply_code(code, &body, &mut format),
                         }
@@ -419,10 +422,9 @@ fn parse_paragraph(body: &str, out: &mut ParagraphFormat) {
         i += 1;
         let start = i;
         let number_end = |mut i: usize| {
-            while bytes
-                .get(i)
-                .is_some_and(|c| c.is_ascii_digit() || matches!(c, b'.' | b'-' | b'+' | b'e' | b'E'))
-            {
+            while bytes.get(i).is_some_and(|c| {
+                c.is_ascii_digit() || matches!(c, b'.' | b'-' | b'+' | b'e' | b'E')
+            }) {
                 i += 1;
             }
             i
@@ -542,7 +544,11 @@ pub(super) fn emit_mtext(
                             })
                             .collect::<String>()
                     };
-                    let body = format!("\\S{}{separator}{};", part(&stack.upper), part(&stack.lower));
+                    let body = format!(
+                        "\\S{}{separator}{};",
+                        part(&stack.upper),
+                        part(&stack.lower)
+                    );
                     scope.enter(&mut out, merge_format(&base, &stack.character_format));
                     out.push_str(&body);
                 }
@@ -843,7 +849,11 @@ fn mtext_is_valid(writer: &Writer, mtext: &IfccadMText) -> bool {
             .is_none_or(|background| validate_background(background, |_| true).is_ok())
 }
 
-pub(super) fn mtext_in(mtext: &IfccadMText, names: &Names, losses: &mut Losses) -> Option<EntityType> {
+pub(super) fn mtext_in(
+    mtext: &IfccadMText,
+    names: &Names,
+    losses: &mut Losses,
+) -> Option<EntityType> {
     let style = names.styles.get(&mtext.style_id)?;
     if mtext.backward || mtext.upside_down {
         losses.note("MText mirroring");
@@ -908,12 +918,14 @@ fn spacing_out(mtext: &MText) -> Option<TextLineSpacing> {
 
 fn spacing_in(spacing: TextLineSpacing, mtext: &mut MText) {
     let (factor, style) = match spacing {
-        TextLineSpacing::Exact { distance } => {
-            (distance / (LINE_PITCH * mtext.height), LineSpacingStyle::Exactly)
-        }
-        TextLineSpacing::AtLeast { distance } => {
-            (distance / (LINE_PITCH * mtext.height), LineSpacingStyle::AtLeast)
-        }
+        TextLineSpacing::Exact { distance } => (
+            distance / (LINE_PITCH * mtext.height),
+            LineSpacingStyle::Exactly,
+        ),
+        TextLineSpacing::AtLeast { distance } => (
+            distance / (LINE_PITCH * mtext.height),
+            LineSpacingStyle::AtLeast,
+        ),
         TextLineSpacing::Multiple { factor } => (factor, LineSpacingStyle::AtLeast),
     };
     if factor.is_finite() && factor > 0.0 {
@@ -924,7 +936,9 @@ fn spacing_in(spacing: TextLineSpacing, mtext: &mut MText) {
 
 fn columns_out(mtext: &MText) -> Option<MTextColumns> {
     let c = &mtext.column_data;
-    let count = u32::try_from(c.column_count).ok().filter(|count| *count > 0)?;
+    let count = u32::try_from(c.column_count)
+        .ok()
+        .filter(|count| *count > 0)?;
     let columns = match c.column_type {
         1 => MTextColumns::Static {
             count,
@@ -987,7 +1001,12 @@ fn columns_in(columns: &MTextColumns, mtext: &mut MText) {
             c.column_type = 2;
             c.auto_height = true;
             mtext.rectangle_height = Some(*column_height);
-            (*current_column_count, *column_width, *gutter, *flow_reversed)
+            (
+                *current_column_count,
+                *column_width,
+                *gutter,
+                *flow_reversed,
+            )
         }
         MTextColumns::DynamicManualHeight {
             column_width,
@@ -1003,7 +1022,12 @@ fn columns_in(columns: &MTextColumns, mtext: &mut MText) {
                     MTextColumnHeight::Auto => 0.0,
                 })
                 .collect();
-            (column_heights.len() as u32, *column_width, *gutter, *flow_reversed)
+            (
+                column_heights.len() as u32,
+                *column_width,
+                *gutter,
+                *flow_reversed,
+            )
         }
     };
     c.column_count = count as i32;
