@@ -4,8 +4,9 @@
 //!
 //! The style mapping follows the cad-dimension crate of ifccad (MPL-2.0). IFCX
 //! defines linear and aligned dimensions only; other kinds stay losses. Stored
-//! dimension pictures (anonymous `*D` blocks) are display caches that a CAD
-//! rebuilds, so they are not carried.
+//! dimension pictures (anonymous `*D` blocks) are not carried. On import,
+//! present IFCCAD graphics are reported as a loss independently of the retained
+//! definition; equivalent regenerated graphics are not guaranteed.
 
 use std::collections::BTreeMap;
 
@@ -859,7 +860,11 @@ pub(super) fn dimension_in(
     source: &IfccadDimension,
     document: &Document,
     names: &Names,
+    losses: &mut Losses,
 ) -> Option<EntityType> {
+    if source.graphics.is_some() {
+        losses.note("stored dimension graphics");
+    }
     let (style_name, base_settings, kinds) = names.dim_styles.get(&source.style_id)?;
     let (origin, normal, frame) = placement_in(&source.placement);
     let frame = snap(frame, ANGLE_STEP);
