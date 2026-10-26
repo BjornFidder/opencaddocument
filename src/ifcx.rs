@@ -2,24 +2,33 @@
 //! mapping between its drawing model and a [`Document`] lives here, so the two
 //! libraries never depend on each other.
 //!
-//! Layers and model-space lines, circles, arcs, points and lightweight
-//! polylines map both ways. Everything else is reported as a [`Loss`].
+//! Layers, text styles, block definitions and the model-space lines, circles,
+//! arcs, ellipses, points, polylines, 2D solids, traces, single-line texts and
+//! block inserts map both ways. Everything else is reported as a [`Loss`].
 
 use std::collections::{BTreeMap, HashMap};
 use std::f64::consts::TAU;
 
-use acadrust::entities::{Arc, Circle, EntityCommon, Line, LwPolyline, LwVertex, Point};
-use acadrust::tables::Layer;
-use acadrust::types::{Color, LineWeight, Transparency, Vector2, Vector3};
+use acadrust::entities::{
+    Arc, Block, BlockEnd, Circle, Ellipse, EntityCommon, Insert, Line, LwPolyline, LwVertex,
+    Point, Polyline3D, Solid, Text, TextHorizontalAlignment, TextVerticalAlignment,
+};
+use acadrust::tables::{BlockRecord, Layer, TextStyle};
+use acadrust::types::{Color, Handle, LineWeight, Matrix3, Transparency, Vector2, Vector3};
 use acadrust::EntityType;
+use ifccad::text::{
+    FontRequest, TextHorizontalAlignment as Horizontal, TextLayout, TextRun, TextStyleProperties,
+    TextVerticalAlignment as Vertical,
+};
 use ifccad::{
-    encode_ifccad_document, load_ifccad_bytes, IfccadColor, IfccadDocument, IfccadEntity,
-    IfccadEntityAppearance, IfccadEntityKind, IfccadHeader, IfccadLayer, IfccadLayerAppearance,
+    encode_ifccad_document, load_ifccad_bytes, IfccadBlockDefinition, IfccadBlockTransform,
+    IfccadColor, IfccadDocument, IfccadEntity, IfccadEntityAppearance, IfccadEntityKind,
+    IfccadFilledQuadrilateral, IfccadHeader, IfccadLayer, IfccadLayerAppearance,
     IfccadLinePatternGeneration, IfccadLinePatternId, IfccadMode, IfccadNativeEntity,
-    IfccadPlacement, IfccadPlanarPolylineWidths,
+    IfccadPlacement, IfccadPlanarPolylineWidths, IfccadText, IfccadTextStyle, IfccadTextStyleId,
 };
 
-use crate::{Document, Error, Format, Loss, Placement};
+use crate::{snap, Document, Error, Format, Loss, Placement};
 
 // Custom document properties that carry an IFCX file's identity through
 // editing, so a drawing read from IFCX is written back as the same drawing.
@@ -79,9 +88,9 @@ const UNITS: [&str; 25] = [
     "usSurveyYard", "usSurveyMile",
 ];
 
-/// Placements that are not plain plan-view frames convert through
-/// trigonometry; they are written snapped so that reading a file and writing
-/// it again produces the same bytes (see [`Placement::snapped`]).
+/// Values that convert through trigonometry or a division are written
+/// snapped, so that reading a file and writing it again produces the same
+/// bytes (see [`Placement::snapped`]).
 const POSITION_STEP: f64 = 1e-8;
 const ANGLE_STEP: f64 = 1e-12;
 
@@ -100,10 +109,7 @@ impl Format for Ifcx {
         let drawing = load_ifccad_bytes(bytes, Default::default())?.into_document();
         let mut losses = Losses::default();
         let mut document = Document::new();
-        document.header.insertion_units = UNITS
-            .iter()
-            .position(|unit| *unit == drawing.length_unit)
-            .unwrap_or(0) as i16;
+        document.header.insertion_units = unit_code(&drawing.length_unit);
         let info = &mut document.summary_info;
         set(&mut info.custom_properties, HEADER_ID, drawing.header.id.clone());
         set(&mut info.custom_properties, DATA_VERSION, drawing.header.data_version.clone());
@@ -112,9 +118,9 @@ impl Format for Ifcx {
             info.author = drawing.header.author.clone();
         }
 
-        let mut layer_names = HashMap::new();
+        let mut names = Names::default();
         for layer in &drawing.layers {
-            layer_names.insert(layer.id, layer.name.clone());
+            names.layers.insert(layer.id, layer.name.clone());
             if layer.appearance.line_pattern != continuous(&drawing) {
                 losses.note(format!("the line pattern of layer {}", layer.name));
             }
@@ -138,30 +144,79 @@ impl Format for Ifcx {
             }
         }
 
-        for entity in &drawing.model.entities {
-            let IfccadEntity::Native(entity) = entity else {
-                losses.note("an entity ifccad keeps only as opaque data");
-                continue;
-            };
-            let Some(mut converted) = entity_in(&entity.kind) else {
-                losses.note(kind_name(&entity.kind));
-                continue;
-            };
-            let common = converted.common_mut();
-            common.layer = layer_names
-                .get(&entity.layer_id)
+        for style in &drawing.text_styles {
+            names.styles.insert(style.id, style.name.clone());
+            let properties = &style.properties;
+            let mut converted = document
+                .text_styles
+                .get(&style.name)
                 .cloned()
-                .unwrap_or_else(|| "0".to_string());
-            appearance_in(&entity.appearance, &drawing, common, &mut losses);
-            common.invisible = !entity.visible;
-            common.linetype_scale = entity.line_pattern_scale;
-            document.add_entity(converted)?;
+                .unwrap_or_else(|| TextStyle::new(style.name.clone()));
+            converted.font_file = properties.font.cad_font_name.clone().unwrap_or_default();
+            converted.big_font_file = properties.font.big_font_name.clone().unwrap_or_default();
+            converted.true_type_font = properties.font.family.clone().unwrap_or_default();
+            converted.width_factor = properties.width_factor;
+            converted.oblique_angle = properties.oblique_angle;
+            converted.is_vertical = properties.vertical;
+            converted.height = properties.creation_height.unwrap_or(0.0);
+            if let Some(height) = properties.last_used_height {
+                converted.last_height = height;
+            }
+            converted.flags.backward = properties.creation_backward;
+            converted.flags.upside_down = properties.creation_upside_down;
+            match document.text_styles.get_mut(&style.name) {
+                Some(existing) => *existing = converted,
+                None => {
+                    converted.handle = document.allocate_handle();
+                    document.text_styles.add(converted)?;
+                }
+            }
+        }
+
+        // Every definition exists before any member is converted, so inserts
+        // of blocks defined later in the file resolve.
+        let mut members = Vec::new();
+        for block in &drawing.blocks {
+            let mut record = BlockRecord::new(block.name.clone());
+            if record.is_model_space()
+                || record.is_paper_space()
+                || document.block_records.get(&block.name).is_some()
+            {
+                losses.note(format!("block {}", block.name));
+                continue;
+            }
+            record.description = block.description.clone();
+            record.flags.anonymous = block.anonymous;
+            record.explodable = block.explodable;
+            record.scale_uniformly = block.uniform_scaling;
+            record.base_point = vector(block.base_point);
+            record.units = unit_code(&block.insertion_unit);
+            record.handle = document.allocate_handle();
+            record.block_entity_handle = document.allocate_handle();
+            record.block_end_handle = document.allocate_handle();
+            let mut start = Block::new(block.name.clone(), record.base_point);
+            start.description = block.description.clone();
+            start.common.handle = record.block_entity_handle;
+            start.common.owner_handle = record.handle;
+            let mut end = BlockEnd::new();
+            end.common.handle = record.block_end_handle;
+            end.common.owner_handle = record.handle;
+            names.blocks.insert(block.id, block.name.clone());
+            members.push((record.handle, &block.entities));
+            document.block_records.add(record)?;
+            document.add_entity(EntityType::Block(start))?;
+            document.add_entity(EntityType::BlockEnd(end))?;
+        }
+        for (owner, entities) in members {
+            for entity in entities {
+                add_in(&mut document, entity, owner, &drawing, &names, &mut losses)?;
+            }
+        }
+        for entity in &drawing.model.entities {
+            add_in(&mut document, entity, Handle::NULL, &drawing, &names, &mut losses)?;
         }
         if !drawing.paper_layouts.is_empty() {
             losses.note("paper layouts");
-        }
-        if !drawing.blocks.is_empty() {
-            losses.note("block definitions");
         }
         Ok((document, losses.into_vec()))
     }
@@ -169,7 +224,6 @@ impl Format for Ifcx {
     fn write(&self, document: &Document) -> Result<(Vec<u8>, Vec<Loss>), Error> {
         let mut drawing = load_ifccad_bytes(TEMPLATE.as_bytes(), Default::default())?
             .into_document();
-        let mut losses = Losses::default();
         let info = &document.summary_info;
         let get = |name: &str| {
             info.custom_properties
@@ -187,19 +241,23 @@ impl Format for Ifcx {
             timestamp: rfc3339(now_seconds()),
         };
         drawing.drawing_id = get(DRAWING_ID).and_then(|id| id.parse().ok()).unwrap_or(1);
-        drawing.length_unit = UNITS
-            .get(document.header.insertion_units as usize)
-            .unwrap_or(&"unitless")
-            .to_string();
+        drawing.length_unit = unit_name(document.header.insertion_units);
+        let mut writer = Writer {
+            document,
+            drawing,
+            losses: Losses::default(),
+            layers: HashMap::new(),
+            styles: HashMap::new(),
+            blocks: HashMap::new(),
+        };
 
-        let mut layer_ids = HashMap::new();
         for layer in document.layers.iter() {
             if !is_continuous(&layer.line_type) {
-                losses.note(format!("the linetype of layer {}", layer.name));
+                writer.losses.note(format!("the linetype of layer {}", layer.name));
             }
-            let id = drawing.id_counters.allocate_layer_id()?;
-            layer_ids.insert(layer.name.to_ascii_lowercase(), id);
-            drawing.layers.push(IfccadLayer {
+            let id = writer.drawing.id_counters.allocate_layer_id()?;
+            writer.layers.insert(layer.name.to_ascii_lowercase(), id);
+            writer.drawing.layers.push(IfccadLayer {
                 id,
                 name: layer.name.clone(),
                 description: None,
@@ -216,38 +274,419 @@ impl Format for Ifcx {
                 },
             });
         }
-        let layer_zero = layer_ids.get("0").copied().unwrap_or(0);
 
-        let mut model = 0;
-        for entity in document.model_space_entities() {
-            model += 1;
-            let Some(kind) = entity_out(entity, &mut losses) else {
-                losses.note(entity.as_entity().entity_type());
+        for style in document.text_styles.iter() {
+            // Shape files back complex linetypes; they are not text styles.
+            if style.is_shape_file || style.name.is_empty() {
                 continue;
+            }
+            let optional = |name: &String| (!name.is_empty()).then(|| name.clone());
+            let mut font = FontRequest {
+                family: optional(&style.true_type_font),
+                cad_font_name: optional(&style.font_file),
+                big_font_name: optional(&style.big_font_file),
+                ..Default::default()
             };
-            let common = entity.common();
-            let layer_id = layer_ids
-                .get(&common.layer.to_ascii_lowercase())
-                .copied()
-                .unwrap_or(layer_zero);
-            drawing.model.entities.push(IfccadEntity::Native(IfccadNativeEntity {
-                id: drawing.id_counters.allocate_entity_id()?,
-                visible: !common.invisible,
-                layer_id,
-                appearance: appearance_out(common, &mut losses),
-                line_pattern_scale: common.linetype_scale,
-                kind,
-            }));
-        }
-        let elsewhere = document.entities().count() - model;
-        if elsewhere > 0 {
-            losses.note(format!(
-                "{elsewhere} entities outside model space (paper layouts, block definitions)"
-            ));
+            if font.cad_font_name.is_none() && (font.family.is_none() || font.big_font_name.is_some())
+            {
+                font.cad_font_name = Some("txt".to_string());
+            }
+            let mut properties = TextStyleProperties::new(font);
+            if style.width_factor > 0.0 {
+                properties.width_factor = style.width_factor;
+            }
+            properties.oblique_angle = style.oblique_angle;
+            properties.vertical = style.is_vertical;
+            properties.creation_height = (style.height > 0.0).then_some(style.height);
+            properties.last_used_height = (style.last_height >= 0.0).then_some(style.last_height);
+            properties.creation_backward = style.flags.backward;
+            properties.creation_upside_down = style.flags.upside_down;
+            let id = writer.drawing.id_counters.allocate_text_style_id()?;
+            writer.styles.insert(style.name.to_ascii_lowercase(), id);
+            writer.drawing.text_styles.push(IfccadTextStyle {
+                id,
+                name: style.name.clone(),
+                properties,
+            });
         }
 
-        let encoded = encode_ifccad_document(&drawing)?;
-        Ok((encoded.bytes().to_vec(), losses.into_vec()))
+        for entity in document.model_space_entities() {
+            if let Some(entity) = writer.entity(entity)? {
+                writer.drawing.model.entities.push(entity);
+            }
+        }
+        // Named blocks are kept even when nothing inserts them; anonymous ones
+        // only exist for what refers to them.
+        for record in document.block_records.iter() {
+            if !record.is_anonymous() {
+                writer.block(&record.name)?;
+            }
+        }
+        let paper: usize = document
+            .block_records
+            .iter()
+            .filter(|record| record.is_paper_space())
+            .map(|record| record.entity_handles.len())
+            .sum();
+        if paper > 0 {
+            writer.losses.note(format!("{paper} paper-space entities"));
+        }
+
+        let encoded = encode_ifccad_document(&writer.drawing)?;
+        Ok((encoded.bytes().to_vec(), writer.losses.into_vec()))
+    }
+}
+
+/// Names of what IFCX refers to by id.
+#[derive(Default)]
+struct Names {
+    layers: HashMap<u64, String>,
+    styles: HashMap<IfccadTextStyleId, String>,
+    blocks: HashMap<u64, String>,
+}
+
+fn add_in(
+    document: &mut Document,
+    entity: &IfccadEntity,
+    owner: Handle,
+    drawing: &IfccadDocument,
+    names: &Names,
+    losses: &mut Losses,
+) -> Result<(), Error> {
+    let IfccadEntity::Native(entity) = entity else {
+        losses.note("an entity ifccad keeps only as opaque data");
+        return Ok(());
+    };
+    let Some(mut converted) = entity_in(&entity.kind, names, losses) else {
+        losses.note(kind_name(&entity.kind));
+        return Ok(());
+    };
+    let common = converted.common_mut();
+    common.owner_handle = owner;
+    common.layer = names
+        .layers
+        .get(&entity.layer_id)
+        .cloned()
+        .unwrap_or_else(|| "0".to_string());
+    appearance_in(&entity.appearance, drawing, common, losses);
+    common.invisible = !entity.visible;
+    common.linetype_scale = entity.line_pattern_scale;
+    document.add_entity(converted)?;
+    Ok(())
+}
+
+struct Writer<'a> {
+    document: &'a Document,
+    drawing: IfccadDocument,
+    losses: Losses,
+    layers: HashMap<String, u64>,
+    styles: HashMap<String, IfccadTextStyleId>,
+    /// Block ids by lower-case name; `None` for blocks IFCX cannot hold.
+    blocks: HashMap<String, Option<u64>>,
+}
+
+impl Writer<'_> {
+    fn entity(&mut self, entity: &EntityType) -> Result<Option<IfccadEntity>, Error> {
+        let Some(kind) = self.kind(entity)? else {
+            self.losses.note(entity.as_entity().entity_type());
+            return Ok(None);
+        };
+        let common = entity.common();
+        let layer_id = match self.layers.get(&common.layer.to_ascii_lowercase()) {
+            Some(id) => *id,
+            None => self.layers.get("0").copied().unwrap_or(0),
+        };
+        Ok(Some(IfccadEntity::Native(IfccadNativeEntity {
+            id: self.drawing.id_counters.allocate_entity_id()?,
+            visible: !common.invisible,
+            layer_id,
+            appearance: appearance_out(common, &mut self.losses),
+            line_pattern_scale: common.linetype_scale,
+            kind,
+        })))
+    }
+
+    /// The id of block `name`, converting its definition the first time.
+    fn block(&mut self, name: &str) -> Result<Option<u64>, Error> {
+        let key = name.to_ascii_lowercase();
+        if let Some(id) = self.blocks.get(&key) {
+            return Ok(*id);
+        }
+        let document = self.document;
+        let Some(record) = document.block_records.get(name) else {
+            return Ok(None);
+        };
+        if record.is_layout()
+            || record.is_model_space()
+            || record.is_paper_space()
+            || record.flags.is_xref
+            || record.flags.is_xref_overlay
+        {
+            self.blocks.insert(key, None);
+            return Ok(None);
+        }
+        // The id is known before the members convert, so a block that
+        // (wrongly) inserts itself does not recurse forever.
+        let id = self.drawing.id_counters.allocate_block_id()?;
+        self.blocks.insert(key, Some(id));
+        let mut entities = Vec::new();
+        for entity in document.entities_in_block(&record.name) {
+            if let Some(entity) = self.entity(entity)? {
+                entities.push(entity);
+            }
+        }
+        self.drawing.blocks.push(IfccadBlockDefinition {
+            description: record.description.clone(),
+            anonymous: record.is_anonymous(),
+            explodable: record.explodable,
+            uniform_scaling: record.scale_uniformly,
+            bounds_quality: None,
+            id,
+            name: record.name.clone(),
+            base_point: array(record.base_point),
+            insertion_unit: unit_name(record.units),
+            bounds: None,
+            entities,
+        });
+        Ok(Some(id))
+    }
+
+    fn kind(&mut self, entity: &EntityType) -> Result<Option<IfccadEntityKind>, Error> {
+        Ok(Some(match entity {
+            EntityType::Line(line) => {
+                if line.thickness != 0.0 {
+                    self.losses.note("line thickness");
+                }
+                IfccadEntityKind::LineSegment {
+                    start: array(line.start),
+                    end: array(line.end),
+                }
+            }
+            EntityType::Point(point) => IfccadEntityKind::Point {
+                placement: placement_out(point.location, Vector3::new(0.0, 0.0, 1.0), 0.0),
+            },
+            EntityType::Circle(circle) => IfccadEntityKind::Circle {
+                radius: circle.radius,
+                placement: placement_out(circle.center, circle.normal, 0.0),
+            },
+            EntityType::Arc(arc) => IfccadEntityKind::Arc {
+                radius: arc.radius,
+                start_parameter: arc.start_angle,
+                sweep_parameter: match (arc.end_angle - arc.start_angle).rem_euclid(TAU) {
+                    0.0 => TAU,
+                    sweep => sweep,
+                },
+                placement: placement_out(arc.center, arc.normal, 0.0),
+            },
+            EntityType::Ellipse(ellipse) => {
+                let axis = to_ocs(ellipse.major_axis, ellipse.normal);
+                let major = snap(axis.x.hypot(axis.y), POSITION_STEP);
+                let minor = snap(major * ellipse.minor_axis_ratio, POSITION_STEP);
+                if !(major > 0.0 && minor > 0.0 && minor <= major) {
+                    return Ok(None);
+                }
+                let placement = placement_out(
+                    to_ocs(ellipse.center, ellipse.normal),
+                    ellipse.normal,
+                    axis.y.atan2(axis.x),
+                );
+                match (ellipse.end_parameter - ellipse.start_parameter).rem_euclid(TAU) {
+                    0.0 => IfccadEntityKind::Ellipse {
+                        semi_major_radius: major,
+                        semi_minor_radius: minor,
+                        placement,
+                    },
+                    sweep => IfccadEntityKind::EllipseArc {
+                        semi_major_radius: major,
+                        semi_minor_radius: minor,
+                        start_parameter: ellipse.start_parameter,
+                        sweep_parameter: sweep,
+                        placement,
+                    },
+                }
+            }
+            EntityType::LwPolyline(polyline) => {
+                let vertex_widths = polyline
+                    .vertices
+                    .iter()
+                    .any(|vertex| vertex.start_width != 0.0 || vertex.end_width != 0.0);
+                IfccadEntityKind::PlanarPolyline {
+                    widths: match vertex_widths {
+                        true => IfccadPlanarPolylineWidths::PerVertex {
+                            widths: polyline
+                                .vertices
+                                .iter()
+                                .map(|vertex| [vertex.start_width, vertex.end_width])
+                                .collect(),
+                        },
+                        false => IfccadPlanarPolylineWidths::Constant {
+                            width: polyline.constant_width,
+                        },
+                    },
+                    vertices: polyline
+                        .vertices
+                        .iter()
+                        .map(|vertex| [vertex.location.x, vertex.location.y])
+                        .collect(),
+                    bulges: polyline.vertices.iter().map(|vertex| vertex.bulge).collect(),
+                    closed: polyline.is_closed,
+                    placement: placement_out(
+                        Vector3::new(0.0, 0.0, polyline.elevation),
+                        polyline.normal,
+                        0.0,
+                    ),
+                    line_pattern_generation: generation(polyline.plinegen),
+                }
+            }
+            EntityType::Polyline3D(polyline) => {
+                if polyline.flags.spline_fit {
+                    self.losses.note("the spline fit of a 3D polyline");
+                }
+                // Spline frame control points (flag 16) are not on the curve.
+                let vertices: Vec<_> = polyline
+                    .vertices
+                    .iter()
+                    .filter(|vertex| vertex.flags & 16 == 0)
+                    .map(|vertex| array(vertex.position))
+                    .collect();
+                if vertices.len() < 2 {
+                    return Ok(None);
+                }
+                IfccadEntityKind::SpatialPolyline {
+                    vertices,
+                    closed: polyline.flags.closed,
+                    line_pattern_generation: generation(polyline.flags.linetype_continuous),
+                }
+            }
+            EntityType::Solid(solid) => {
+                let corners = [
+                    solid.first_corner,
+                    solid.second_corner,
+                    solid.third_corner,
+                    solid.fourth_corner,
+                ];
+                let elevation = solid.first_corner.z;
+                if corners.iter().any(|corner| corner.z != elevation) {
+                    return Ok(None);
+                }
+                let quadrilateral = IfccadFilledQuadrilateral {
+                    placement: placement_out(Vector3::new(0.0, 0.0, elevation), solid.normal, 0.0),
+                    corners: corners.map(|corner| [corner.x, corner.y]),
+                    thickness: solid.thickness,
+                };
+                match solid.is_trace {
+                    true => IfccadEntityKind::Trace(quadrilateral),
+                    false => IfccadEntityKind::Solid(quadrilateral),
+                }
+            }
+            EntityType::Text(text) => {
+                let Some(&style_id) = self.styles.get(&text.style.to_ascii_lowercase()) else {
+                    return Ok(None);
+                };
+                if !(text.height > 0.0 && text.width_factor > 0.0) {
+                    return Ok(None);
+                }
+                let start = text.insertion_point;
+                let alignment = text.alignment_point.unwrap_or(start);
+                type H = TextHorizontalAlignment;
+                // The point the text hangs from, its rotation, the rotation of
+                // its frame, and how it is laid out.
+                let (origin, rotation, frame, layout) = match text.horizontal_alignment {
+                    H::Aligned | H::Fit => {
+                        let (dx, dy) = (alignment.x - start.x, alignment.y - start.y);
+                        let length = snap(dx.hypot(dy), POSITION_STEP);
+                        if length <= 0.0 {
+                            return Ok(None);
+                        }
+                        let layout = match text.horizontal_alignment {
+                            H::Aligned => TextLayout::Aligned {
+                                length,
+                                width_factor: text.width_factor,
+                            },
+                            _ => TextLayout::Fit {
+                                length,
+                                height: text.height,
+                            },
+                        };
+                        (start, 0.0, dy.atan2(dx), layout)
+                    }
+                    H::Middle => (
+                        alignment,
+                        text.rotation,
+                        0.0,
+                        TextLayout::WholeTextMiddle {
+                            height: text.height,
+                            width_factor: text.width_factor,
+                        },
+                    ),
+                    horizontal => {
+                        let vertical = match text.vertical_alignment {
+                            TextVerticalAlignment::Baseline => Vertical::Baseline,
+                            TextVerticalAlignment::Bottom => Vertical::Bottom,
+                            TextVerticalAlignment::Middle => Vertical::Middle,
+                            TextVerticalAlignment::Top => Vertical::Top,
+                        };
+                        let horizontal = match horizontal {
+                            H::Left => Horizontal::Left,
+                            H::Center => Horizontal::Center,
+                            _ => Horizontal::Right,
+                        };
+                        let origin = match (horizontal, vertical) {
+                            (Horizontal::Left, Vertical::Baseline) => start,
+                            _ => alignment,
+                        };
+                        let layout = TextLayout::Anchored {
+                            horizontal,
+                            vertical,
+                            height: text.height,
+                            width_factor: text.width_factor,
+                        };
+                        (origin, text.rotation, 0.0, layout)
+                    }
+                };
+                IfccadEntityKind::Text(IfccadText {
+                    style_id,
+                    placement: placement_out(origin, text.normal, frame),
+                    rotation,
+                    backward: text.generation_flags & 2 != 0,
+                    upside_down: text.generation_flags & 4 != 0,
+                    layout,
+                    oblique_angle: text.oblique_angle,
+                    thickness: text.thickness,
+                    // ponytail: %% control codes stay literal; parse them into
+                    // runs if another IFCX reader needs the underline/overline.
+                    content: match text.value.is_empty() {
+                        true => Vec::new(),
+                        false => vec![TextRun {
+                            text: text.value.clone(),
+                            underline: false,
+                            overline: false,
+                            strike_through: false,
+                        }],
+                    },
+                })
+            }
+            EntityType::Insert(insert) => {
+                if insert.is_array() {
+                    return Ok(None);
+                }
+                let Some(definition_id) = self.block(&insert.block_name)? else {
+                    return Ok(None);
+                };
+                if insert.has_attributes() {
+                    self.losses.note("block attributes");
+                }
+                IfccadEntityKind::BlockInstance {
+                    definition_id,
+                    transform: IfccadBlockTransform {
+                        placement: placement_out(insert.insert_point, insert.normal, 0.0),
+                        rotation: insert.rotation,
+                        scale: [insert.x_scale(), insert.y_scale(), insert.z_scale()],
+                    },
+                }
+            }
+            _ => return Ok(None),
+        }))
     }
 }
 
@@ -274,7 +713,7 @@ impl Losses {
     }
 }
 
-fn entity_in(kind: &IfccadEntityKind) -> Option<EntityType> {
+fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Option<EntityType> {
     Some(match kind {
         IfccadEntityKind::LineSegment { start, end } => {
             EntityType::Line(Line::from_points(vector(*start), vector(*end)))
@@ -309,6 +748,39 @@ fn entity_in(kind: &IfccadEntityKind) -> Option<EntityType> {
             arc.end_angle = (start + sweep_parameter.abs()).rem_euclid(TAU);
             EntityType::Arc(arc)
         }
+        IfccadEntityKind::Ellipse {
+            semi_major_radius,
+            semi_minor_radius,
+            placement,
+        }
+        | IfccadEntityKind::EllipseArc {
+            semi_major_radius,
+            semi_minor_radius,
+            placement,
+            ..
+        } => {
+            if semi_minor_radius > semi_major_radius {
+                return None;
+            }
+            let (_, normal, _) = placement_in(placement);
+            let mut ellipse = Ellipse::new();
+            ellipse.center = vector(placement.origin);
+            ellipse.major_axis = vector(placement.x_axis) * *semi_major_radius;
+            ellipse.minor_axis_ratio = semi_minor_radius / semi_major_radius;
+            ellipse.normal = normal;
+            if let IfccadEntityKind::EllipseArc {
+                start_parameter,
+                sweep_parameter,
+                ..
+            } = kind
+            {
+                // A clockwise sweep is the same arc drawn from its other end.
+                let start = start_parameter + sweep_parameter.min(0.0);
+                ellipse.start_parameter = start;
+                ellipse.end_parameter = start + sweep_parameter.abs();
+            }
+            EntityType::Ellipse(ellipse)
+        }
         IfccadEntityKind::PlanarPolyline {
             widths,
             vertices,
@@ -318,19 +790,13 @@ fn entity_in(kind: &IfccadEntityKind) -> Option<EntityType> {
             line_pattern_generation,
         } => {
             let (origin, normal, rotation) = placement_in(placement);
-            let (sin, cos) = rotation.sin_cos();
             let mut polyline = LwPolyline::new();
             polyline.normal = normal;
             polyline.elevation = origin.z;
             polyline.is_closed = *closed;
             polyline.plinegen = *line_pattern_generation == IfccadLinePatternGeneration::Continuous;
             for (index, [u, v]) in vertices.iter().enumerate() {
-                // Local frame coordinates, rotated and moved into the OCS.
-                let (x, y) = match rotation {
-                    0.0 => (*u, *v),
-                    _ => (u * cos - v * sin, u * sin + v * cos),
-                };
-                let mut vertex = LwVertex::new(Vector2::new(x + origin.x, y + origin.y));
+                let mut vertex = LwVertex::new(frame_to_ocs(*u, *v, origin, rotation));
                 vertex.bulge = bulges.get(index).copied().unwrap_or(0.0);
                 polyline.vertices.push(vertex);
             }
@@ -355,81 +821,131 @@ fn entity_in(kind: &IfccadEntityKind) -> Option<EntityType> {
             }
             EntityType::LwPolyline(polyline)
         }
-        _ => return None,
-    })
-}
-
-fn entity_out(entity: &EntityType, losses: &mut Losses) -> Option<IfccadEntityKind> {
-    Some(match entity {
-        EntityType::Line(line) => {
-            if line.thickness != 0.0 {
-                losses.note("line thickness");
-            }
-            IfccadEntityKind::LineSegment {
-                start: array(line.start),
-                end: array(line.end),
-            }
+        IfccadEntityKind::SpatialPolyline {
+            vertices,
+            closed,
+            line_pattern_generation,
+        } => {
+            let mut polyline =
+                Polyline3D::from_points(vertices.iter().map(|vertex| vector(*vertex)).collect());
+            polyline.flags.closed = *closed;
+            polyline.flags.linetype_continuous =
+                *line_pattern_generation == IfccadLinePatternGeneration::Continuous;
+            EntityType::Polyline3D(polyline)
         }
-        EntityType::Point(point) => IfccadEntityKind::Point {
-            placement: placement_out(point.location, Vector3::new(0.0, 0.0, 1.0)),
-        },
-        EntityType::Circle(circle) => IfccadEntityKind::Circle {
-            radius: circle.radius,
-            placement: placement_out(circle.center, circle.normal),
-        },
-        EntityType::Arc(arc) => IfccadEntityKind::Arc {
-            radius: arc.radius,
-            start_parameter: arc.start_angle,
-            sweep_parameter: match (arc.end_angle - arc.start_angle).rem_euclid(TAU) {
-                0.0 => TAU,
-                sweep => sweep,
-            },
-            placement: placement_out(arc.center, arc.normal),
-        },
-        EntityType::LwPolyline(polyline) => {
-            let vertex_widths = polyline
-                .vertices
+        IfccadEntityKind::Solid(quadrilateral) | IfccadEntityKind::Trace(quadrilateral) => {
+            let (origin, normal, rotation) = placement_in(&quadrilateral.placement);
+            let [first, second, third, fourth] = quadrilateral.corners.map(|[u, v]| {
+                let corner = frame_to_ocs(u, v, origin, rotation);
+                Vector3::new(corner.x, corner.y, origin.z)
+            });
+            let mut solid = Solid::new(first, second, third, fourth)
+                .with_normal(normal)
+                .with_thickness(quadrilateral.thickness);
+            solid.is_trace = matches!(kind, IfccadEntityKind::Trace(_));
+            EntityType::Solid(solid)
+        }
+        IfccadEntityKind::Text(text) => {
+            let style = names.styles.get(&text.style_id)?;
+            let (origin, normal, frame) = placement_in(&text.placement);
+            if text
+                .content
                 .iter()
-                .any(|vertex| vertex.start_width != 0.0 || vertex.end_width != 0.0);
-            IfccadEntityKind::PlanarPolyline {
-                widths: match vertex_widths {
-                    true => IfccadPlanarPolylineWidths::PerVertex {
-                        widths: polyline
-                            .vertices
-                            .iter()
-                            .map(|vertex| [vertex.start_width, vertex.end_width])
-                            .collect(),
-                    },
-                    false => IfccadPlanarPolylineWidths::Constant {
-                        width: polyline.constant_width,
-                    },
-                },
-                vertices: polyline
-                    .vertices
-                    .iter()
-                    .map(|vertex| [vertex.location.x, vertex.location.y])
-                    .collect(),
-                bulges: polyline.vertices.iter().map(|vertex| vertex.bulge).collect(),
-                closed: polyline.is_closed,
-                placement: placement_out(
-                    Vector3::new(0.0, 0.0, polyline.elevation),
-                    polyline.normal,
-                ),
-                line_pattern_generation: match polyline.plinegen {
-                    true => IfccadLinePatternGeneration::Continuous,
-                    false => IfccadLinePatternGeneration::PerSegment,
-                },
+                .any(|run| run.underline || run.overline || run.strike_through)
+            {
+                losses.note("text underline, overline and strike-through");
             }
+            let mut converted = Text::new();
+            converted.value = text.content.iter().map(|run| run.text.as_str()).collect();
+            converted.style = style.clone();
+            converted.normal = normal;
+            converted.thickness = text.thickness;
+            converted.oblique_angle = text.oblique_angle;
+            converted.generation_flags =
+                i16::from(text.backward) * 2 + i16::from(text.upside_down) * 4;
+            converted.insertion_point = origin;
+            // A frame turned in its plane is a text rotation; written frames
+            // are square to the OCS, so read them back exactly that way.
+            converted.rotation = text.rotation + snap(frame, ANGLE_STEP);
+            type H = TextHorizontalAlignment;
+            type V = TextVerticalAlignment;
+            match text.layout {
+                TextLayout::Anchored {
+                    horizontal,
+                    vertical,
+                    height,
+                    width_factor,
+                } => {
+                    converted.height = height;
+                    converted.width_factor = width_factor;
+                    converted.horizontal_alignment = match horizontal {
+                        Horizontal::Left => H::Left,
+                        Horizontal::Center => H::Center,
+                        Horizontal::Right => H::Right,
+                    };
+                    converted.vertical_alignment = match vertical {
+                        Vertical::Baseline => V::Baseline,
+                        Vertical::Bottom => V::Bottom,
+                        Vertical::Middle => V::Middle,
+                        Vertical::Top => V::Top,
+                    };
+                    if (horizontal, vertical) != (Horizontal::Left, Vertical::Baseline) {
+                        converted.alignment_point = Some(origin);
+                    }
+                }
+                TextLayout::WholeTextMiddle {
+                    height,
+                    width_factor,
+                } => {
+                    converted.height = height;
+                    converted.width_factor = width_factor;
+                    converted.horizontal_alignment = H::Middle;
+                    converted.alignment_point = Some(origin);
+                }
+                TextLayout::Aligned { length, .. } | TextLayout::Fit { length, .. } => {
+                    match text.layout {
+                        TextLayout::Aligned { width_factor, .. } => {
+                            converted.horizontal_alignment = H::Aligned;
+                            converted.width_factor = width_factor;
+                        }
+                        TextLayout::Fit { height, .. } => {
+                            converted.horizontal_alignment = H::Fit;
+                            converted.height = height;
+                        }
+                        _ => unreachable!(),
+                    }
+                    let (sin, cos) = converted.rotation.sin_cos();
+                    converted.alignment_point =
+                        Some(origin + Vector3::new(length * cos, length * sin, 0.0));
+                }
+            }
+            EntityType::Text(converted)
+        }
+        IfccadEntityKind::BlockInstance {
+            definition_id,
+            transform,
+        } => {
+            let name = names.blocks.get(definition_id)?;
+            let (origin, normal, frame) = placement_in(&transform.placement);
+            let mut insert = Insert::new(name.clone(), origin);
+            insert.normal = normal;
+            insert.rotation = transform.rotation + snap(frame, ANGLE_STEP);
+            let [x, y, z] = transform.scale;
+            insert.set_x_scale(x);
+            insert.set_y_scale(y);
+            insert.set_z_scale(z);
+            EntityType::Insert(insert)
         }
         _ => return None,
     })
 }
 
-/// A frame with origin `origin` in the object coordinate system of `normal`.
-fn placement_out(origin: Vector3, normal: Vector3) -> IfccadPlacement {
-    let placement = Placement::from_ocs(origin, normal, 0.0);
+/// A frame with origin `origin` in the object coordinate system of `normal`,
+/// turned by `rotation` about it.
+fn placement_out(origin: Vector3, normal: Vector3, rotation: f64) -> IfccadPlacement {
+    let placement = Placement::from_ocs(origin, normal, rotation);
     // A plan-view frame converts exactly; leave it untouched.
-    let placement = match normal == Vector3::new(0.0, 0.0, 1.0) {
+    let placement = match normal == Vector3::new(0.0, 0.0, 1.0) && rotation == 0.0 {
         true => placement,
         false => placement.snapped(POSITION_STEP, ANGLE_STEP),
     };
@@ -449,6 +965,33 @@ fn placement_in(placement: &IfccadPlacement) -> (Vector3, Vector3, f64) {
         vector(placement.y_axis),
     )
     .to_ocs()
+}
+
+/// Frame coordinates `(u, v)` in the OCS of a frame at `origin` turned by
+/// `rotation`.
+fn frame_to_ocs(u: f64, v: f64, origin: Vector3, rotation: f64) -> Vector2 {
+    let (x, y) = match rotation {
+        0.0 => (u, v),
+        _ => {
+            let (sin, cos) = rotation.sin_cos();
+            (u * cos - v * sin, u * sin + v * cos)
+        }
+    };
+    Vector2::new(x + origin.x, y + origin.y)
+}
+
+/// A world point or direction in the object coordinate system of `normal`.
+fn to_ocs(point: Vector3, normal: Vector3) -> Vector3 {
+    let m = Matrix3::arbitrary_axis(normal).m;
+    let axis = |i: usize| m[0][i] * point.x + m[1][i] * point.y + m[2][i] * point.z;
+    Vector3::new(axis(0), axis(1), axis(2))
+}
+
+fn generation(continuous: bool) -> IfccadLinePatternGeneration {
+    match continuous {
+        true => IfccadLinePatternGeneration::Continuous,
+        false => IfccadLinePatternGeneration::PerSegment,
+    }
 }
 
 fn appearance_out(common: &EntityCommon, losses: &mut Losses) -> IfccadEntityAppearance {
@@ -536,6 +1079,14 @@ fn continuous(drawing: &IfccadDocument) -> IfccadLinePatternId {
 
 fn is_continuous(linetype: &str) -> bool {
     linetype.is_empty() || linetype.eq_ignore_ascii_case("continuous")
+}
+
+fn unit_code(name: &str) -> i16 {
+    UNITS.iter().position(|unit| *unit == name).unwrap_or(0) as i16
+}
+
+fn unit_name(code: i16) -> String {
+    UNITS.get(code as usize).unwrap_or(&"unitless").to_string()
 }
 
 /// ACI 7 is the foreground colour; other indices keep their index identity.

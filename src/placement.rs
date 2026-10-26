@@ -59,22 +59,24 @@ impl Placement {
     pub fn snapped(&self, position: f64, angle: f64) -> Self {
         let n = self.normal.normalize();
         let elevation = snap(n.z.atan2(n.x.hypot(n.y)), angle);
-        // At a pole every azimuth is the same direction: pin it, or noise
-        // in a near-vertical normal would pick a different one each time.
-        let azimuth = if elevation.abs() == snap(FRAC_PI_2, angle) {
-            0.0
+        // At a pole every azimuth is the same direction, and the snapped
+        // elevation is not exactly a right angle: take the pole itself, or
+        // a plan-view normal would come out tilted by the rounding.
+        let normal = if elevation.abs() == snap(FRAC_PI_2, angle) {
+            Vector3::new(0.0, 0.0, elevation.signum())
         } else {
-            snap(n.y.atan2(n.x), angle)
+            let azimuth = snap(n.y.atan2(n.x), angle);
+            let (sin_e, cos_e) = elevation.sin_cos();
+            let (sin_a, cos_a) = azimuth.sin_cos();
+            Vector3::new(cos_e * cos_a, cos_e * sin_a, sin_e)
         };
-        let (sin_e, cos_e) = elevation.sin_cos();
-        let (sin_a, cos_a) = azimuth.sin_cos();
         Self {
             origin: Vector3::new(
                 snap(self.origin.x, position),
                 snap(self.origin.y, position),
                 snap(self.origin.z, position),
             ),
-            normal: Vector3::new(cos_e * cos_a, cos_e * sin_a, sin_e),
+            normal,
             rotation: snap(self.rotation.sin().atan2(self.rotation.cos()), angle),
         }
     }
