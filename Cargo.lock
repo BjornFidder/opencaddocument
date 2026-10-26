@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "acadrust"
 version = "0.6.6"
-source = "git+https://github.com/HakanSeven12/acadrust.git?rev=24b037a#24b037af9d1490b83464e5d43b14a7f4d12744e8"
+source = "git+https://github.com/HakanSeven12/acadrust.git?rev=1e7dd2a#1e7dd2a38082bf4b07d8245eee22c83f6cc303dc"
 dependencies = [
  "anyhow",
  "bitflags",
@@ -15,6 +15,7 @@ dependencies = [
  "foldhash",
  "indexmap",
  "itoa",
+ "memchr",
  "memmap2",
  "nom",
  "oem_cp",
