@@ -3,7 +3,7 @@
 #![cfg(feature = "ifcx")]
 
 use opencaddocument::entities::{
-    Arc, Circle, Ellipse, Insert, Line, LwPolyline, LwVertex, Point, Polyline3D, Solid, Text,
+    Arc, Circle, Ellipse, Insert, Line, LwPolyline, LwVertex, MText, Point, Polyline3D, Solid, Text,
     TextHorizontalAlignment, TextVerticalAlignment,
 };
 use opencaddocument::tables::BlockRecord;
@@ -63,6 +63,10 @@ fn geometry(document: &Document) -> Vec<String> {
                 t.horizontal_alignment,
                 t.vertical_alignment,
                 t.style
+            ),
+            EntityType::MText(m) => format!(
+                "mtext {:?} {:?} {} {} {:?}",
+                m.value, m.insertion_point, m.height, m.rectangle_width, m.attachment_point
             ),
             EntityType::Insert(i) => format!(
                 "insert {} {:?} {} {} {} {}",
@@ -200,6 +204,13 @@ fn a_drawing_round_trips_and_is_byte_stable_after_the_first_save() {
     text.alignment_point = Some(Vector3::new(13.0, 9.0, 0.0));
     add(&mut document, EntityType::Text(text));
 
+    let mut mtext = MText::new();
+    mtext.value = "{\\fArial|b1|i0;Bold} plain \\C1;red\\P\\pxqc;Centre 25%%d \\S1/2; {\\H2x;big}".to_string();
+    mtext.insertion_point = Vector3::new(0.0, 40.0, 0.0);
+    mtext.height = 2.5;
+    mtext.rectangle_width = 30.0;
+    add(&mut document, EntityType::MText(Box::new(mtext)));
+
     // A block holding a line and an insert of another block.
     let define = |document: &mut Document, name: &str, members: Vec<EntityType>| {
         let mut record = BlockRecord::new(name);
@@ -241,7 +252,7 @@ fn a_drawing_round_trips_and_is_byte_stable_after_the_first_save() {
     // the centred text's insertion point (derived from it) is not compared.
     // The rest is exact.
     for (got, expected) in got.iter().zip(&expected) {
-        let converted = ["circle", "ellipse"].iter().any(|kind| got.starts_with(kind))
+        let converted = ["circle", "ellipse", "mtext"].iter().any(|kind| got.starts_with(kind))
             || got.contains("Aligned")
             || got.contains("Center");
         if !converted {
@@ -305,4 +316,29 @@ fn complex_line_patterns_round_trip() {
     assert_eq!(patterns(&again), patterns(&document));
     let (second, _) = Ifcx.write(&again).unwrap();
     assert_eq!(without_timestamp(&second), without_timestamp(&first));
+}
+
+/// Every fixture: reads cleanly, writes without new losses, and its bytes
+/// settle after the first save.
+#[test]
+fn fixtures_settle_after_the_first_save() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let mut names: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "ifcx"))
+        .collect();
+    names.sort();
+    for path in names {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let (document, _) = Ifcx.read(&std::fs::read(&path).unwrap()).unwrap();
+        let audit = document.audit();
+        assert_eq!(audit.error_count(), 0, "{name}: {audit:#?}");
+        let (first, losses) = Ifcx.write(&document).unwrap();
+        assert!(losses.is_empty(), "{name}: {losses:?}");
+        let (again, _) = Ifcx.read(&first).unwrap();
+        assert_eq!(geometry(&again), geometry(&document), "{name}");
+        let (second, _) = Ifcx.write(&again).unwrap();
+        assert_eq!(without_timestamp(&second), without_timestamp(&first), "{name}");
+    }
 }

@@ -18,7 +18,8 @@ use acadrust::tables::BlockRecord;
 use acadrust::types::{Color, Handle, LineWeight, Matrix3, Transparency, Vector2, Vector3};
 use acadrust::EntityType;
 use ifccad::text::{
-    TextHorizontalAlignment as Horizontal, TextLayout, TextRun, TextVerticalAlignment as Vertical,
+    validate_text_runs, FontRequest, TextHorizontalAlignment as Horizontal, TextLayout, TextRun,
+    TextVerticalAlignment as Vertical,
 };
 use ifccad::{
     encode_ifccad_document, load_ifccad_bytes, IfccadBlockDefinition, IfccadBlockTransform,
@@ -31,6 +32,7 @@ use ifccad::{
 use crate::{snap, Document, Error, Format, Loss, Placement};
 
 mod tables;
+mod text;
 
 // Custom document properties that carry an IFCX file's identity through
 // editing, so a drawing read from IFCX is written back as the same drawing.
@@ -486,7 +488,10 @@ impl Writer<'_> {
                 let Some(&style_id) = self.styles.get(&text.style.to_ascii_lowercase()) else {
                     return Ok(None);
                 };
-                if !(text.height > 0.0 && text.width_factor > 0.0) {
+                let content = text::text_runs(&text.value);
+                if !(text.height > 0.0 && text.width_factor > 0.0)
+                    || validate_text_runs(&content).is_err()
+                {
                     return Ok(None);
                 }
                 let start = text.insertion_point;
@@ -556,19 +561,10 @@ impl Writer<'_> {
                     layout,
                     oblique_angle: text.oblique_angle,
                     thickness: text.thickness,
-                    // ponytail: %% control codes stay literal; parse them into
-                    // runs if another IFCX reader needs the underline/overline.
-                    content: match text.value.is_empty() {
-                        true => Vec::new(),
-                        false => vec![TextRun {
-                            text: text.value.clone(),
-                            underline: false,
-                            overline: false,
-                            strike_through: false,
-                        }],
-                    },
+                    content,
                 })
             }
+            EntityType::MText(mtext) => return Ok(text::mtext_out(self, mtext)),
             EntityType::Insert(insert) => {
                 if insert.is_array() {
                     return Ok(None);
@@ -751,15 +747,8 @@ fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Opt
         IfccadEntityKind::Text(text) => {
             let style = names.styles.get(&text.style_id)?;
             let (origin, normal, frame) = placement_in(&text.placement);
-            if text
-                .content
-                .iter()
-                .any(|run| run.underline || run.overline || run.strike_through)
-            {
-                losses.note("text underline, overline and strike-through");
-            }
             let mut converted = Text::new();
-            converted.value = text.content.iter().map(|run| run.text.as_str()).collect();
+            converted.value = text::text_value(&text.content);
             converted.style = style.clone();
             converted.normal = normal;
             converted.thickness = text.thickness;
@@ -824,6 +813,7 @@ fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Opt
             }
             EntityType::Text(converted)
         }
+        IfccadEntityKind::MText(mtext) => return text::mtext_in(mtext, names, losses),
         IfccadEntityKind::BlockInstance {
             definition_id,
             transform,
