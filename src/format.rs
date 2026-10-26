@@ -1,8 +1,8 @@
 use std::io::Cursor;
 
-use acadrust::{DwgReader, DwgWriter, DxfReader, DxfWriter, Handle};
+use acadrust::{DwgWriter, DxfWriter, Handle};
 
-use crate::Document;
+use crate::{Document, DwgReader, DxfReader};
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 

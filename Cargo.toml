@@ -7,7 +7,8 @@ license = "MPL-2.0"
 repository = "https://github.com/HakanSeven12/opencaddocument"
 
 [features]
-serde = ["acadrust/serde"]
+serde = ["acadrust/serde", "dep:serde"]
 
 [dependencies]
 acadrust = { git = "https://github.com/HakanSeven12/acadrust.git", rev = "24b037a" }
+serde = { version = "1", features = ["derive"], optional = true }

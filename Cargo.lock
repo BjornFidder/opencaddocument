@@ -280,6 +280,7 @@ name = "opencaddocument"
 version = "0.1.0"
 dependencies = [
  "acadrust",
+ "serde",
 ]
 
 [[package]]
