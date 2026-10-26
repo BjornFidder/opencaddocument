@@ -53,6 +53,8 @@ fn without_timestamp(bytes: &[u8]) -> String {
 #[test]
 fn ifccad_fixture_reads_and_keeps_its_identity() {
     let (document, losses) = Ifcx.read(HELLO).unwrap();
+    let audit = document.audit();
+    assert_eq!(audit.error_count(), 0, "{audit:#?}");
     let kinds: Vec<_> = geometry(&document)
         .iter()
         .map(|g| g.split(' ').next().unwrap().to_string())
@@ -112,10 +114,12 @@ fn a_drawing_round_trips_and_is_byte_stable_after_the_first_save() {
 
     let (first, losses) = Ifcx.write(&document).unwrap();
     let messages: Vec<_> = losses.iter().map(|loss| loss.message.as_str()).collect();
-    assert_eq!(messages, ["TEXT is not converted"], "{messages:?}");
+    assert_eq!(messages, ["TEXT: not converted"], "{messages:?}");
 
     let (read, losses) = Ifcx.read(&first).unwrap();
     assert!(losses.is_empty(), "{losses:?}");
+    let audit = read.audit();
+    assert_eq!(audit.error_count(), 0, "{audit:#?}");
     let expected: Vec<_> = geometry(&document).into_iter().filter(|g| !g.starts_with("Text")).collect();
     let got = geometry(&read);
     assert_eq!(got.len(), expected.len(), "{got:#?}");

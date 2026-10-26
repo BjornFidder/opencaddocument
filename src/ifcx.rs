@@ -132,6 +132,7 @@ impl Format for Ifcx {
             match document.layers.get_mut(&layer.name) {
                 Some(existing) => *existing = converted,
                 None => {
+                    converted.handle = document.allocate_handle();
                     document.layers.add(converted)?;
                 }
             }
@@ -265,8 +266,8 @@ impl Losses {
             .map(|(what, count)| Loss {
                 handle: None,
                 message: match count {
-                    1 => format!("{what} is not converted"),
-                    n => format!("{what} is not converted ({n}×)"),
+                    1 => format!("{what}: not converted"),
+                    n => format!("{what}: not converted ({n}×)"),
                 },
             })
             .collect()
