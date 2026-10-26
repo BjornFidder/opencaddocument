@@ -30,3 +30,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
       - run: cargo test --locked --features serde
+      - run: cargo test --locked --features serde,ifcx

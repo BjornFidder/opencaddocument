@@ -7,6 +7,8 @@
 //! [`Placement`]).
 
 mod format;
+#[cfg(feature = "ifcx")]
+mod ifcx;
 mod placement;
 mod read;
 
@@ -15,6 +17,8 @@ mod read;
 pub use acadrust;
 pub use acadrust::*;
 pub use format::{snap, Dwg, Dxf, Error, Format, Loss};
+#[cfg(feature = "ifcx")]
+pub use ifcx::Ifcx;
 pub use placement::Placement;
 pub use read::{DwgReader, DxfReader};
 

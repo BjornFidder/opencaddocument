@@ -14,6 +14,15 @@ representation and converts at the edge. `Placement` is the first example:
 - A converter writing a non-native format writes the snapped placement. After
   the first save, saving again produces the same bytes.
 
+With the `ifcx` feature, the `Ifcx` format reads and writes IFCX through
+[ifccad](https://github.com/OpenAEC-Foundation/ifccad):
+- ifccad only reads and writes the files; the mapping to `Document` lives here,
+  so neither library depends on the other.
+- Layers and model-space lines, circles, arcs, points and lightweight polylines
+  map both ways. Everything else is reported as a loss.
+- An IFCX file's identity (header id, drawing id) rides on custom document
+  properties, so a drawing read from IFCX is written back as the same drawing.
+
 DWG and DXF reading and writing come from
 [acadrust](https://github.com/HakanSeven12/acadrust), a fork of the
 upstream acadrust crate.
