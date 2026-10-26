@@ -4,9 +4,9 @@
 //!
 //! The mapping covers the drawing tables, block
 //! definitions, paper layouts with their viewports and plot settings, the
-//! workspace state, and every IFCX entity kind. Stored dimension graphics are
-//! omitted and reported as a [`Loss`] on import. What IFCX has no place for is
-//! also reported as a loss.
+//! workspace state, and every IFCX entity kind. Stored dimension graphics use
+//! native CAD picture blocks within a qualified exact planar profile. Pictures
+//! outside that profile and semantics IFCX cannot hold are reported as losses.
 
 use std::collections::{BTreeMap, HashMap};
 use std::f64::consts::TAU;
@@ -33,6 +33,7 @@ use ifccad::{
 use crate::{snap, Document, Error, Format, Loss, Placement};
 
 mod dimension;
+mod dimension_graphics;
 mod hatch;
 mod layout;
 mod tables;
@@ -187,7 +188,9 @@ impl Format for Ifcx {
         let mut handles = HashMap::new();
         for (owner, entities) in members.into_iter().chain(sheets).chain([model]) {
             for entity in entities {
-                if let Some(handle) = add_in(&mut document, entity, owner, &names, &mut losses)? {
+                if let Some(handle) =
+                    add_in(&mut document, entity, owner, &drawing, &names, &mut losses)?
+                {
                     handles.insert(entity.id(), handle);
                 }
             }
@@ -354,6 +357,7 @@ fn add_in(
     document: &mut Document,
     entity: &IfccadEntity,
     owner: Handle,
+    drawing: &IfccadDocument,
     names: &Names,
     losses: &mut Losses,
 ) -> Result<Option<Handle>, Error> {
@@ -362,9 +366,7 @@ fn add_in(
         return Ok(None);
     };
     let converted = match &entity.kind {
-        IfccadEntityKind::Dimension(source) => {
-            dimension::dimension_in(source, document, names, losses)
-        }
+        IfccadEntityKind::Dimension(source) => dimension::dimension_in(source, document, names),
         kind => entity_in(kind, names, losses),
     };
     let Some(mut converted) = converted else {
@@ -381,6 +383,22 @@ fn add_in(
     appearance_in(&entity.appearance, names, common, losses);
     common.invisible = !entity.visible;
     common.linetype_scale = entity.line_pattern_scale;
+    if let (IfccadEntityKind::Dimension(source), EntityType::Dimension(target)) =
+        (&entity.kind, &mut converted)
+    {
+        if let Some(name) = dimension_graphics::import(
+            source,
+            entity.id,
+            entity.layer_id,
+            owner,
+            drawing,
+            document,
+            names,
+            losses,
+        )? {
+            target.base_mut().block_name = name;
+        }
+    }
     Ok(Some(document.add_entity(converted)?))
 }
 
@@ -420,10 +438,18 @@ struct Writer<'a> {
 
 impl Writer<'_> {
     fn entity(&mut self, entity: &EntityType) -> Result<Option<IfccadEntity>, Error> {
-        let Some(kind) = self.kind(entity)? else {
+        if let EntityType::Dimension(dimension) = entity {
+            dimension_graphics::validate_link(self.document, dimension)?;
+        }
+        let Some(mut kind) = self.kind(entity)? else {
             self.losses.note(entity.as_entity().entity_type());
             return Ok(None);
         };
+        if let (EntityType::Dimension(source), IfccadEntityKind::Dimension(target)) =
+            (entity, &mut kind)
+        {
+            target.graphics = dimension_graphics::capture(self, source, &target.placement)?;
+        }
         let common = entity.common();
         let layer_id = match self.layers.get(&common.layer.to_ascii_lowercase()) {
             Some(id) => *id,
