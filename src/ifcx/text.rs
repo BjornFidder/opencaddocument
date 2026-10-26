@@ -899,7 +899,7 @@ fn spacing_out(mtext: &MText) -> Option<TextLineSpacing> {
     {
         return None;
     }
-    let distance = snap(mtext.line_spacing_factor * LINE_PITCH * mtext.height, POSITION_STEP);
+    let distance = settle(mtext.line_spacing_factor * LINE_PITCH * mtext.height);
     Some(match mtext.line_spacing_style {
         LineSpacingStyle::AtLeast => TextLineSpacing::AtLeast { distance },
         LineSpacingStyle::Exactly => TextLineSpacing::Exact { distance },

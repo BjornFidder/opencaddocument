@@ -96,6 +96,33 @@ fn blocks(document: &Document) -> Vec<(String, usize)> {
     out
 }
 
+/// `text` with every number rounded to nine significant digits.
+fn rounded(text: String) -> String {
+    let mut out = String::new();
+    let mut number = String::new();
+    let flush = |number: &mut String, out: &mut String| {
+        match number.parse::<f64>() {
+            Ok(value) if number.contains('.') => out.push_str(&format!("{value:.8e}")),
+            _ => out.push_str(number),
+        }
+        number.clear();
+    };
+    for c in text.chars() {
+        let continues = c.is_ascii_digit()
+            || c == '.'
+            || (c == '-' && (number.is_empty() || number.ends_with('e')))
+            || (c == 'e' && !number.is_empty());
+        if continues {
+            number.push(c);
+        } else {
+            flush(&mut number, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut number, &mut out);
+    out
+}
+
 /// Bytes with the write timestamp blanked, which is the only part allowed to
 /// change between saves.
 fn without_timestamp(bytes: &[u8]) -> String {
@@ -337,8 +364,67 @@ fn fixtures_settle_after_the_first_save() {
         let (first, losses) = Ifcx.write(&document).unwrap();
         assert!(losses.is_empty(), "{name}: {losses:?}");
         let (again, _) = Ifcx.read(&first).unwrap();
-        assert_eq!(geometry(&again), geometry(&document), "{name}");
+        // The first save settles converted lengths to about 1e-12.
+        let settled = |document: &Document| geometry(document).into_iter().map(rounded).collect::<Vec<_>>();
+        assert_eq!(settled(&again), settled(&document), "{name}");
         let (second, _) = Ifcx.write(&again).unwrap();
         assert_eq!(without_timestamp(&second), without_timestamp(&first), "{name}");
     }
+}
+
+#[test]
+fn a_patterned_hatch_round_trips() {
+    use opencaddocument::entities::hatch::{
+        BoundaryEdge, BoundaryPath, CircularArcEdge, Hatch, HatchPattern, HatchPatternLine,
+        LineEdge,
+    };
+    let mut document = Document::new();
+    let mut hatch = Hatch::new();
+    hatch.is_solid = false;
+    hatch.common.linetype = "ByLayer".to_string();
+    hatch.pattern = HatchPattern::new("ANSI37");
+    hatch.pattern_angle = 0.3;
+    hatch.pattern_scale = 2.5;
+    // Lines as a CAD stores them: turned and scaled already.
+    for angle in [0.3, 0.3 + std::f64::consts::FRAC_PI_2] {
+        let (sin, cos) = angle.sin_cos();
+        hatch.pattern.lines.push(HatchPatternLine {
+            angle,
+            base_point: Vector2::new(0.0, 0.0),
+            offset: Vector2::new(-sin * 0.3125, cos * 0.3125),
+            dash_lengths: vec![0.625, -0.3125, 0.0, -0.3125],
+        });
+    }
+    let mut outer = BoundaryPath::new();
+    outer.edges.push(BoundaryEdge::Line(LineEdge { start: Vector2::new(0.0, 0.0), end: Vector2::new(10.0, 0.0) }));
+    outer.edges.push(BoundaryEdge::CircularArc(CircularArcEdge {
+        center: Vector2::new(10.0, 5.0),
+        radius: 5.0,
+        // Clockwise: stored angles are the mathematical ones negated, so
+        // this runs from (10, 0) through (5, 5) to (10, 10).
+        start_angle: std::f64::consts::FRAC_PI_2,
+        end_angle: 3.0 * std::f64::consts::FRAC_PI_2,
+        counter_clockwise: false,
+    }));
+    outer.edges.push(BoundaryEdge::Line(LineEdge { start: Vector2::new(10.0, 10.0), end: Vector2::new(0.0, 0.0) }));
+    hatch.paths.push(outer);
+    let mut hole = BoundaryPath::new();
+    hole.edges.push(BoundaryEdge::CircularArc(CircularArcEdge {
+        center: Vector2::new(5.0, 3.0),
+        radius: 1.0,
+        start_angle: 0.0,
+        end_angle: std::f64::consts::TAU,
+        counter_clockwise: true,
+    }));
+    hatch.paths.push(hole);
+    document.add_entity(EntityType::Hatch(Box::new(hatch))).unwrap();
+
+    let (first, losses) = Ifcx.write(&document).unwrap();
+    assert!(losses.is_empty(), "{losses:?}");
+    let (read, losses) = Ifcx.read(&first).unwrap();
+    assert!(losses.is_empty(), "{losses:?}");
+    let settled = |document: &Document| geometry(document).into_iter().map(rounded).collect::<Vec<_>>();
+    assert_eq!(settled(&read), settled(&document));
+    let (second, _) = Ifcx.write(&read).unwrap();
+    assert_eq!(without_timestamp(&second), without_timestamp(&first));
 }

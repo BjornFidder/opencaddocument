@@ -31,6 +31,7 @@ use ifccad::{
 
 use crate::{snap, Document, Error, Format, Loss, Placement};
 
+mod hatch;
 mod tables;
 mod text;
 
@@ -98,6 +99,21 @@ const UNITS: [&str; 25] = [
 const POSITION_STEP: f64 = 1e-8;
 const ANGLE_STEP: f64 = 1e-12;
 
+/// `value` rounded to its 40 most significant bits.
+///
+/// Lengths that convert through a division or a square root are written
+/// settled: reading them back gives a value a few ulps off, and settling
+/// that rounds to the same bits again, so after the first save the file stays
+/// the same. The rounding is about one part in 10^12.
+fn settle(value: f64) -> f64 {
+    const DROPPED: u32 = 12;
+    if !value.is_finite() || value == 0.0 {
+        return value + 0.0;
+    }
+    let half = 1u64 << (DROPPED - 1);
+    f64::from_bits((value.to_bits() + half) & !((1u64 << DROPPED) - 1))
+}
+
 pub struct Ifcx;
 
 impl Format for Ifcx {
@@ -159,13 +175,38 @@ impl Format for Ifcx {
             document.add_entity(EntityType::Block(start))?;
             document.add_entity(EntityType::BlockEnd(end))?;
         }
-        for (owner, entities) in members {
+        let model = (Handle::NULL, &drawing.model.entities);
+        let mut handles = HashMap::new();
+        for (owner, entities) in members.into_iter().chain([model]) {
             for entity in entities {
-                add_in(&mut document, entity, owner, &names, &mut losses)?;
+                if let Some(handle) = add_in(&mut document, entity, owner, &names, &mut losses)? {
+                    handles.insert(entity.id(), handle);
+                }
             }
         }
-        for entity in &drawing.model.entities {
-            add_in(&mut document, entity, Handle::NULL, &names, &mut losses)?;
+        // Hatch boundaries refer to entities that may come after them.
+        let scopes = drawing.blocks.iter().map(|block| &block.entities);
+        for entity in scopes.chain([&drawing.model.entities]).flatten() {
+            let Some(IfccadNativeEntity {
+                id,
+                kind: IfccadEntityKind::Hatch(hatch),
+                ..
+            }) = entity.as_native()
+            else {
+                continue;
+            };
+            let Some(EntityType::Hatch(converted)) =
+                handles.get(id).and_then(|handle| document.get_entity_mut(*handle))
+            else {
+                continue;
+            };
+            for (path, hatch_loop) in converted.paths.iter_mut().zip(&hatch.loops) {
+                path.boundary_handles = hatch_loop
+                    .source_entity_ids
+                    .iter()
+                    .filter_map(|id| handles.get(id).copied())
+                    .collect();
+            }
         }
         if !drawing.paper_layouts.is_empty() {
             losses.note("paper layouts");
@@ -204,6 +245,8 @@ impl Format for Ifcx {
             style_handles: HashMap::new(),
             symbols: HashMap::new(),
             blocks: HashMap::new(),
+            entity_ids: HashMap::new(),
+            hatch_sources: HashMap::new(),
         };
 
         tables::write(&mut writer)?;
@@ -220,6 +263,12 @@ impl Format for Ifcx {
                 writer.block(&record.name)?;
             }
         }
+        let ids = &writer.entity_ids;
+        let sources = &writer.hatch_sources;
+        link_hatches(&mut writer.drawing.model.entities, ids, sources);
+        for block in &mut writer.drawing.blocks {
+            link_hatches(&mut block.entities, ids, sources);
+        }
         let paper: usize = document
             .block_records
             .iter()
@@ -232,6 +281,41 @@ impl Format for Ifcx {
 
         let encoded = encode_ifccad_document(&writer.drawing)?;
         Ok((encoded.bytes().to_vec(), writer.losses.into_vec()))
+    }
+}
+
+/// Point each hatch loop at its boundary source entities, the ones that are
+/// in the same scope and can bound a hatch.
+fn link_hatches(
+    entities: &mut [IfccadEntity],
+    ids: &HashMap<Handle, u64>,
+    sources: &HashMap<u64, Vec<Vec<Handle>>>,
+) {
+    let eligible: std::collections::HashSet<u64> = entities
+        .iter()
+        .filter_map(IfccadEntity::as_native)
+        .filter(|entity| entity.kind.is_hatch_boundary_source())
+        .map(|entity| entity.id)
+        .collect();
+    for entity in entities {
+        let IfccadEntity::Native(IfccadNativeEntity {
+            id,
+            kind: IfccadEntityKind::Hatch(hatch),
+            ..
+        }) = entity
+        else {
+            continue;
+        };
+        let Some(handles) = sources.get(id) else {
+            continue;
+        };
+        for (hatch_loop, handles) in hatch.loops.iter_mut().zip(handles) {
+            hatch_loop.source_entity_ids = handles
+                .iter()
+                .filter_map(|handle| ids.get(handle).copied())
+                .filter(|id| eligible.contains(id))
+                .collect();
+        }
     }
 }
 
@@ -252,14 +336,14 @@ fn add_in(
     owner: Handle,
     names: &Names,
     losses: &mut Losses,
-) -> Result<(), Error> {
+) -> Result<Option<Handle>, Error> {
     let IfccadEntity::Native(entity) = entity else {
         losses.note("an entity ifccad keeps only as opaque data");
-        return Ok(());
+        return Ok(None);
     };
     let Some(mut converted) = entity_in(&entity.kind, names, losses) else {
         losses.note(kind_name(&entity.kind));
-        return Ok(());
+        return Ok(None);
     };
     let common = converted.common_mut();
     common.owner_handle = owner;
@@ -271,8 +355,7 @@ fn add_in(
     appearance_in(&entity.appearance, names, common, losses);
     common.invisible = !entity.visible;
     common.linetype_scale = entity.line_pattern_scale;
-    document.add_entity(converted)?;
-    Ok(())
+    Ok(Some(document.add_entity(converted)?))
 }
 
 struct Writer<'a> {
@@ -288,6 +371,9 @@ struct Writer<'a> {
     symbols: HashMap<Handle, IfccadSymbolSourceId>,
     /// Block ids by lower-case name; `None` for blocks IFCX cannot hold.
     blocks: HashMap<String, Option<u64>>,
+    entity_ids: HashMap<Handle, u64>,
+    /// Boundary source handles of each hatch loop, by hatch id.
+    hatch_sources: HashMap<u64, Vec<Vec<Handle>>>,
 }
 
 impl Writer<'_> {
@@ -301,8 +387,16 @@ impl Writer<'_> {
             Some(id) => *id,
             None => self.layers.get("0").copied().unwrap_or(0),
         };
+        let id = self.drawing.id_counters.allocate_entity_id()?;
+        self.entity_ids.insert(common.handle, id);
+        if let EntityType::Hatch(hatch) = entity {
+            let sources: Vec<_> = hatch.paths.iter().map(|p| p.boundary_handles.clone()).collect();
+            if sources.iter().any(|handles| !handles.is_empty()) {
+                self.hatch_sources.insert(id, sources);
+            }
+        }
         Ok(Some(IfccadEntity::Native(IfccadNativeEntity {
-            id: self.drawing.id_counters.allocate_entity_id()?,
+            id,
             visible: !common.invisible,
             layer_id,
             appearance: appearance_out(common, &self.line_patterns, &mut self.losses),
@@ -385,8 +479,8 @@ impl Writer<'_> {
             },
             EntityType::Ellipse(ellipse) => {
                 let axis = to_ocs(ellipse.major_axis, ellipse.normal);
-                let major = snap(axis.x.hypot(axis.y), POSITION_STEP);
-                let minor = snap(major * ellipse.minor_axis_ratio, POSITION_STEP);
+                let major = settle(axis.x.hypot(axis.y));
+                let minor = settle(major * ellipse.minor_axis_ratio);
                 if !(major > 0.0 && minor > 0.0 && minor <= major) {
                     return Ok(None);
                 }
@@ -502,7 +596,7 @@ impl Writer<'_> {
                 let (origin, rotation, frame, layout) = match text.horizontal_alignment {
                     H::Aligned | H::Fit => {
                         let (dx, dy) = (alignment.x - start.x, alignment.y - start.y);
-                        let length = snap(dx.hypot(dy), POSITION_STEP);
+                        let length = settle(dx.hypot(dy));
                         if length <= 0.0 {
                             return Ok(None);
                         }
@@ -565,6 +659,7 @@ impl Writer<'_> {
                 })
             }
             EntityType::MText(mtext) => return Ok(text::mtext_out(self, mtext)),
+            EntityType::Hatch(hatch) => return Ok(hatch::hatch_out(hatch, &mut self.losses)),
             EntityType::Insert(insert) => {
                 if insert.is_array() {
                     return Ok(None);
@@ -814,6 +909,7 @@ fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Opt
             EntityType::Text(converted)
         }
         IfccadEntityKind::MText(mtext) => return text::mtext_in(mtext, names, losses),
+        IfccadEntityKind::Hatch(hatch) => hatch::hatch_in(hatch),
         IfccadEntityKind::BlockInstance {
             definition_id,
             transform,
@@ -1091,7 +1187,21 @@ fn rfc3339(seconds: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::rfc3339;
+    use super::{rfc3339, settle};
+
+    #[test]
+    fn settled_values_settle_again_after_a_few_ulps() {
+        for value in [0.1, -3.7, 1.0 / 3.0, 12_345.678_9, 6.02e23, -1e-9] {
+            let settled = settle(value);
+            assert!(((settled - value) / value).abs() < 1e-12);
+            let mut nearby = settled;
+            for _ in 0..8 {
+                assert_eq!(settle(nearby), settled);
+                nearby = nearby.next_up();
+            }
+            assert_eq!(settle(settled.next_down()), settled);
+        }
+    }
 
     #[test]
     fn timestamps_are_utc_civil_dates() {
