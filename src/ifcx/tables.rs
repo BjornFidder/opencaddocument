@@ -209,7 +209,11 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
     }
 
     // SHX files complex linetypes draw their shapes from.
-    for style in document.text_styles.iter().filter(|style| style.is_shape_file) {
+    for style in document
+        .text_styles
+        .iter()
+        .filter(|style| style.is_shape_file)
+    {
         let file_name = style.font_file.rsplit(['/', '\\']).next().unwrap_or("");
         let source = SymbolSource::Shx {
             file_name: file_name.to_string(),
@@ -219,7 +223,10 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
         }
         let id = writer.drawing.id_counters.allocate_symbol_source_id()?;
         writer.symbols.insert(style.handle, id);
-        writer.drawing.symbol_sources.push(IfccadSymbolSource { id, source });
+        writer
+            .drawing
+            .symbol_sources
+            .push(IfccadSymbolSource { id, source });
     }
 
     for style in document.text_styles.iter() {
@@ -233,8 +240,7 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
             big_font_name: optional(&style.big_font_file),
             ..Default::default()
         };
-        if font.cad_font_name.is_none() && (font.family.is_none() || font.big_font_name.is_some())
-        {
+        if font.cad_font_name.is_none() && (font.family.is_none() || font.big_font_name.is_some()) {
             font.cad_font_name = Some("txt".to_string());
         }
         let mut properties = TextStyleProperties::new(font);
@@ -313,10 +319,15 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
     }
 
     for layer in document.layers.iter() {
-        let line_pattern = match writer.line_patterns.get(&layer.line_type.to_ascii_lowercase()) {
+        let line_pattern = match writer
+            .line_patterns
+            .get(&layer.line_type.to_ascii_lowercase())
+        {
             Some(id) => *id,
             None => {
-                writer.losses.note(format!("the linetype of layer {}", layer.name));
+                writer
+                    .losses
+                    .note(format!("the linetype of layer {}", layer.name));
                 IfccadLinePatternId(0)
             }
         };
@@ -357,7 +368,10 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
             elevation: ucs.elevation,
         });
     }
-    let current = match writer.ucs_ids.get(&header.model_space_ucs_name.to_ascii_lowercase()) {
+    let current = match writer
+        .ucs_ids
+        .get(&header.model_space_ucs_name.to_ascii_lowercase())
+    {
         Some(id) => Some(IfccadUcsSelection::Named(*id)),
         None => frame_out(
             header.model_space_ucs_origin,
@@ -447,7 +461,12 @@ fn marker_in(marker: &IfccadLinePatternMarker, names: &Names) -> Option<LineType
 /// A UCS frame, if its axes are the unit, perpendicular pair IFCX requires.
 fn frame_out(origin: Vector3, x: Vector3, y: Vector3) -> Option<CoordinateFrame3> {
     let kernel = |v: Vector3| KernelVector::new(v.x, v.y, v.z);
-    CoordinateFrame3::try_new(Point3::new(origin.x, origin.y, origin.z), kernel(x), kernel(y)).ok()
+    CoordinateFrame3::try_new(
+        Point3::new(origin.x, origin.y, origin.z),
+        kernel(x),
+        kernel(y),
+    )
+    .ok()
 }
 
 /// PDMODE and PDSIZE.

@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::f64::consts::TAU;
 
 use acadrust::entities::{
-    Arc, Block, BlockEnd, Circle, Ellipse, EntityCommon, Insert, Line, LwPolyline, LwVertex,
-    Point, Polyline3D, Solid, Text, TextHorizontalAlignment, TextVerticalAlignment,
+    Arc, Block, BlockEnd, Circle, Ellipse, EntityCommon, Insert, Line, LwPolyline, LwVertex, Point,
+    Polyline3D, Solid, Text, TextHorizontalAlignment, TextVerticalAlignment,
 };
 use acadrust::tables::BlockRecord;
 use acadrust::types::{Color, Handle, LineWeight, Matrix3, Transparency, Vector2, Vector3};
@@ -23,10 +23,10 @@ use ifccad::text::{
     TextVerticalAlignment as Vertical,
 };
 use ifccad::{
-    encode_ifccad_document, load_ifccad_bytes, IfccadBlockDefinition, IfccadPaperLayout, IfccadBlockTransform,
+    encode_ifccad_document, load_ifccad_bytes, IfccadBlockDefinition, IfccadBlockTransform,
     IfccadColor, IfccadDocument, IfccadEntity, IfccadEntityAppearance, IfccadEntityKind,
     IfccadFilledQuadrilateral, IfccadHeader, IfccadLinePatternGeneration, IfccadLinePatternId,
-    IfccadMode, IfccadNativeEntity, IfccadPlacement, IfccadPlanarPolylineWidths,
+    IfccadMode, IfccadNativeEntity, IfccadPaperLayout, IfccadPlacement, IfccadPlanarPolylineWidths,
     IfccadSymbolSourceId, IfccadText, IfccadTextStyleId, IfccadUcsId, IfccadUcsSelection,
 };
 
@@ -92,9 +92,31 @@ const TEMPLATE: &str = r#"{
 
 /// INSUNITS codes 0-24 in order, as IFCX length-unit tokens.
 const UNITS: [&str; 25] = [
-    "unitless", "in", "ft", "mi", "mm", "cm", "m", "km", "microin", "mil", "yd", "angstrom",
-    "nm", "um", "dm", "dam", "hm", "Gm", "au", "ly", "pc", "usSurveyFoot", "usSurveyInch",
-    "usSurveyYard", "usSurveyMile",
+    "unitless",
+    "in",
+    "ft",
+    "mi",
+    "mm",
+    "cm",
+    "m",
+    "km",
+    "microin",
+    "mil",
+    "yd",
+    "angstrom",
+    "nm",
+    "um",
+    "dm",
+    "dam",
+    "hm",
+    "Gm",
+    "au",
+    "ly",
+    "pc",
+    "usSurveyFoot",
+    "usSurveyInch",
+    "usSurveyYard",
+    "usSurveyMile",
 ];
 
 /// Values that convert through trigonometry or a division are written
@@ -135,9 +157,21 @@ impl Format for Ifcx {
         let mut document = Document::new();
         document.header.insertion_units = unit_code(&drawing.length_unit);
         let info = &mut document.summary_info;
-        set(&mut info.custom_properties, HEADER_ID, drawing.header.id.clone());
-        set(&mut info.custom_properties, DATA_VERSION, drawing.header.data_version.clone());
-        set(&mut info.custom_properties, DRAWING_ID, drawing.drawing_id.to_string());
+        set(
+            &mut info.custom_properties,
+            HEADER_ID,
+            drawing.header.id.clone(),
+        );
+        set(
+            &mut info.custom_properties,
+            DATA_VERSION,
+            drawing.header.data_version.clone(),
+        );
+        set(
+            &mut info.custom_properties,
+            DRAWING_ID,
+            drawing.drawing_id.to_string(),
+        );
         if info.author.is_empty() {
             info.author = drawing.header.author.clone();
         }
@@ -183,7 +217,10 @@ impl Format for Ifcx {
         let papers = layout::read(&drawing, &mut document, &mut losses)?;
         let mut sheets: Vec<&IfccadPaperLayout> = drawing.paper_layouts.iter().collect();
         sheets.sort_by_key(|paper| paper.tab_index);
-        let sheets = papers.iter().zip(sheets).map(|(owner, paper)| (*owner, &paper.entities));
+        let sheets = papers
+            .iter()
+            .zip(sheets)
+            .map(|(owner, paper)| (*owner, &paper.entities));
         let model = (Handle::NULL, &drawing.model.entities);
         let mut handles = HashMap::new();
         for (owner, entities) in members.into_iter().chain(sheets).chain([model]) {
@@ -198,7 +235,11 @@ impl Format for Ifcx {
         // Hatch boundaries refer to entities that may come after them.
         let scopes = drawing.blocks.iter().map(|block| &block.entities);
         let papers_entities = drawing.paper_layouts.iter().map(|paper| &paper.entities);
-        for entity in scopes.chain(papers_entities).chain([&drawing.model.entities]).flatten() {
+        for entity in scopes
+            .chain(papers_entities)
+            .chain([&drawing.model.entities])
+            .flatten()
+        {
             let Some(IfccadNativeEntity {
                 id,
                 kind: IfccadEntityKind::Hatch(hatch),
@@ -207,8 +248,9 @@ impl Format for Ifcx {
             else {
                 continue;
             };
-            let Some(EntityType::Hatch(converted)) =
-                handles.get(id).and_then(|handle| document.get_entity_mut(*handle))
+            let Some(EntityType::Hatch(converted)) = handles
+                .get(id)
+                .and_then(|handle| document.get_entity_mut(*handle))
             else {
                 continue;
             };
@@ -226,8 +268,8 @@ impl Format for Ifcx {
     }
 
     fn write(&self, document: &Document) -> Result<(Vec<u8>, Vec<Loss>), Error> {
-        let mut drawing = load_ifccad_bytes(TEMPLATE.as_bytes(), Default::default())?
-            .into_document();
+        let mut drawing =
+            load_ifccad_bytes(TEMPLATE.as_bytes(), Default::default())?.into_document();
         let info = &document.summary_info;
         let get = |name: &str| {
             info.custom_properties
@@ -286,7 +328,10 @@ impl Format for Ifcx {
         let sources = &writer.hatch_sources;
         let drawing = &mut writer.drawing;
         let scopes = drawing.blocks.iter_mut().map(|block| &mut block.entities);
-        let papers = drawing.paper_layouts.iter_mut().map(|paper| &mut paper.entities);
+        let papers = drawing
+            .paper_layouts
+            .iter_mut()
+            .map(|paper| &mut paper.entities);
         for entities in scopes.chain(papers).chain([&mut drawing.model.entities]) {
             link_hatches(entities, ids, sources);
             dimension::link_associations(entities, ids, &writer.dimension_sources);
@@ -424,7 +469,13 @@ struct Writer<'a> {
     layout_ids: HashMap<Handle, u64>,
     ucs_ids: HashMap<String, IfccadUcsId>,
     /// Dimension style ids and settings by lower-case name.
-    dim_styles: HashMap<String, (ifccad::IfccadDimensionStyleId, ifccad::IfccadDimensionSettings)>,
+    dim_styles: HashMap<
+        String,
+        (
+            ifccad::IfccadDimensionStyleId,
+            ifccad::IfccadDimensionSettings,
+        ),
+    >,
     /// Point associations of each associated dimension, by its handle.
     dimension_sources: HashMap<
         Handle,
@@ -455,7 +506,11 @@ impl Writer<'_> {
         let id = self.drawing.id_counters.allocate_entity_id()?;
         self.entity_ids.insert(common.handle, id);
         if let EntityType::Hatch(hatch) = entity {
-            let sources: Vec<_> = hatch.paths.iter().map(|p| p.boundary_handles.clone()).collect();
+            let sources: Vec<_> = hatch
+                .paths
+                .iter()
+                .map(|p| p.boundary_handles.clone())
+                .collect();
             if sources.iter().any(|handles| !handles.is_empty()) {
                 self.hatch_sources.insert(id, sources);
             }
@@ -592,7 +647,11 @@ impl Writer<'_> {
                         .iter()
                         .map(|vertex| [vertex.location.x, vertex.location.y])
                         .collect(),
-                    bulges: polyline.vertices.iter().map(|vertex| vertex.bulge).collect(),
+                    bulges: polyline
+                        .vertices
+                        .iter()
+                        .map(|vertex| vertex.bulge)
+                        .collect(),
                     closed: polyline.is_closed,
                     placement: placement_out(
                         Vector3::new(0.0, 0.0, polyline.elevation),
@@ -726,7 +785,9 @@ impl Writer<'_> {
             EntityType::MText(mtext) => return Ok(text::mtext_out(self, mtext)),
             EntityType::Hatch(hatch) => return Ok(hatch::hatch_out(hatch, &mut self.losses)),
             EntityType::Viewport(viewport) => return Ok(layout::viewport_out(self, viewport)),
-            EntityType::Dimension(dimension) => return Ok(dimension::dimension_out(self, dimension)),
+            EntityType::Dimension(dimension) => {
+                return Ok(dimension::dimension_out(self, dimension))
+            }
             EntityType::Insert(insert) => {
                 if insert.is_array() {
                     return Ok(None);
@@ -1247,7 +1308,11 @@ fn rfc3339(seconds: u64) -> String {
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_index = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
     let year = year_of_era + era * 400 + i64::from(month <= 2);
     let time = seconds % 86_400;
     format!(

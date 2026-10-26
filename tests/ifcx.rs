@@ -3,8 +3,8 @@
 #![cfg(feature = "ifcx")]
 
 use opencaddocument::entities::{
-    Arc, Circle, Ellipse, Insert, Line, LwPolyline, LwVertex, MText, Point, Polyline3D, Solid, Text,
-    TextHorizontalAlignment, TextVerticalAlignment,
+    Arc, Circle, Ellipse, Insert, Line, LwPolyline, LwVertex, MText, Point, Polyline3D, Solid,
+    Text, TextHorizontalAlignment, TextVerticalAlignment,
 };
 use opencaddocument::tables::BlockRecord;
 use opencaddocument::types::{Vector2, Vector3};
@@ -15,7 +15,10 @@ const NESTED: &[u8] = include_bytes!("fixtures/hello-nested-blocks.ifcx");
 
 fn property(document: &Document, name: &str) -> Option<String> {
     let properties = &document.summary_info.custom_properties;
-    properties.iter().find(|(key, _)| key == name).map(|(_, value)| value.clone())
+    properties
+        .iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.clone())
 }
 
 fn geometry(document: &Document) -> Vec<String> {
@@ -33,7 +36,13 @@ fn geometry(document: &Document) -> Vec<String> {
                 "polyline {:?} {} {} {:?}",
                 p.vertices
                     .iter()
-                    .map(|v| (v.location.x, v.location.y, v.bulge, v.start_width, v.end_width))
+                    .map(|v| (
+                        v.location.x,
+                        v.location.y,
+                        v.bulge,
+                        v.start_width,
+                        v.end_width
+                    ))
                     .collect::<Vec<_>>(),
                 p.is_closed,
                 p.elevation,
@@ -41,7 +50,12 @@ fn geometry(document: &Document) -> Vec<String> {
             ),
             EntityType::Ellipse(e) => format!(
                 "ellipse {:?} {:?} {} {} {} {:?}",
-                e.center, e.major_axis, e.minor_axis_ratio, e.start_parameter, e.end_parameter, e.normal
+                e.center,
+                e.major_axis,
+                e.minor_axis_ratio,
+                e.start_parameter,
+                e.end_parameter,
+                e.normal
             ),
             EntityType::Polyline3D(p) => format!(
                 "polyline3d {:?} {}",
@@ -50,7 +64,12 @@ fn geometry(document: &Document) -> Vec<String> {
             ),
             EntityType::Solid(s) => format!(
                 "solid {:?} {:?} {:?} {:?} {} {}",
-                s.first_corner, s.second_corner, s.third_corner, s.fourth_corner, s.thickness, s.is_trace
+                s.first_corner,
+                s.second_corner,
+                s.third_corner,
+                s.fourth_corner,
+                s.thickness,
+                s.is_trace
             ),
             EntityType::Text(t) => format!(
                 "text {:?} {:?} {:?} {} {} {} {:?} {:?} {}",
@@ -78,7 +97,10 @@ fn geometry(document: &Document) -> Vec<String> {
                     b.text_override(),
                     b.actual_measurement,
                     b.text_user_positioned.then_some(b.text_middle_point),
-                    b.common.extended_data.get_record("ACAD").map(|r| r.values.clone())
+                    b.common
+                        .extended_data
+                        .get_record("ACAD")
+                        .map(|r| r.values.clone())
                 )
             }
             EntityType::Insert(i) => format!(
@@ -100,7 +122,12 @@ fn geometry(document: &Document) -> Vec<String> {
 /// The text around the first place `a` and `b` differ.
 fn difference(a: &str, b: &str) -> String {
     let at = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
-    let window = |text: &str| text.chars().skip(at.saturating_sub(150)).take(300).collect::<String>();
+    let window = |text: &str| {
+        text.chars()
+            .skip(at.saturating_sub(150))
+            .take(300)
+            .collect::<String>()
+    };
     format!("\n  got: …{}…\n want: …{}…", window(a), window(b))
 }
 
@@ -119,7 +146,10 @@ fn sheets(document: &Document) -> Vec<String> {
     layouts
         .into_iter()
         .map(|layout| {
-            let record = document.block_records.iter().find(|r| r.handle == layout.block_record);
+            let record = document
+                .block_records
+                .iter()
+                .find(|r| r.handle == layout.block_record);
             let mut entities: Vec<String> = record
                 .map(|record| {
                     document
@@ -150,7 +180,12 @@ fn blocks(document: &Document) -> Vec<(String, usize)> {
         .block_records
         .iter()
         .filter(|record| !record.is_model_space() && !record.is_paper_space())
-        .map(|record| (record.name.clone(), document.entities_in_block(&record.name).count()))
+        .map(|record| {
+            (
+                record.name.clone(),
+                document.entities_in_block(&record.name).count(),
+            )
+        })
         .collect();
     out.sort();
     out
@@ -164,7 +199,10 @@ fn rounded(text: String) -> String {
         .enumerate()
         .map(|(index, part)| match index {
             0 => part.to_string(),
-            _ => format!("Handle(#{}", part.trim_start_matches(|c: char| c.is_ascii_digit())),
+            _ => format!(
+                "Handle(#{}",
+                part.trim_start_matches(|c: char| c.is_ascii_digit())
+            ),
         })
         .collect::<String>();
     let mut out = String::new();
@@ -210,10 +248,18 @@ fn ifccad_fixture_reads_and_keeps_its_identity() {
         .iter()
         .map(|g| g.split(' ').next().unwrap().to_string())
         .collect();
-    assert_eq!(kinds, ["circle", "insert", "insert", "line", "polyline"], "{:#?}", geometry(&document));
+    assert_eq!(
+        kinds,
+        ["circle", "insert", "insert", "line", "polyline"],
+        "{:#?}",
+        geometry(&document)
+    );
     assert!(losses.is_empty(), "{losses:?}");
     assert_eq!(blocks(&document).len(), 1, "{:?}", blocks(&document));
-    assert_eq!(property(&document, "IFCX id").as_deref(), Some("ifccad-experimental-hello"));
+    assert_eq!(
+        property(&document, "IFCX id").as_deref(),
+        Some("ifccad-experimental-hello")
+    );
     assert_eq!(property(&document, "IFCX drawing id").as_deref(), Some("1"));
     assert_eq!(document.header.insertion_units, 5, "cm");
 
@@ -236,7 +282,10 @@ fn a_drawing_round_trips_and_is_byte_stable_after_the_first_save() {
     };
     add(
         &mut document,
-        EntityType::Line(Line::from_points(Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 50.0, 0.0))),
+        EntityType::Line(Line::from_points(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(100.0, 50.0, 0.0),
+        )),
     );
     let mut circle = Circle::new();
     circle.center = Vector3::new(30.0, 5.0, 2.0);
@@ -301,7 +350,8 @@ fn a_drawing_round_trips_and_is_byte_stable_after_the_first_save() {
     add(&mut document, EntityType::Text(text));
 
     let mut mtext = MText::new();
-    mtext.value = "{\\fArial|b1|i0;Bold} plain \\C1;red\\P\\pxqc;Centre 25%%d \\S1/2; {\\H2x;big}".to_string();
+    mtext.value = "{\\fArial|b1|i0;Bold} plain \\C1;red\\P\\pxqc;Centre 25%%d \\S1/2; {\\H2x;big}"
+        .to_string();
     mtext.insertion_point = Vector3::new(0.0, 40.0, 0.0);
     mtext.height = 2.5;
     mtext.rectangle_width = 30.0;
@@ -321,12 +371,18 @@ fn a_drawing_round_trips_and_is_byte_stable_after_the_first_save() {
     define(
         &mut document,
         "Inner",
-        vec![EntityType::Line(Line::from_points(Vector3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0)))],
+        vec![EntityType::Line(Line::from_points(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+        ))],
     );
     define(
         &mut document,
         "Outer",
-        vec![EntityType::Insert(Insert::new("Inner", Vector3::new(2.0, 0.0, 0.0)))],
+        vec![EntityType::Insert(Insert::new(
+            "Inner",
+            Vector3::new(2.0, 0.0, 0.0),
+        ))],
     );
     let mut insert = Insert::new("Outer", Vector3::new(50.0, 60.0, 0.0));
     insert.rotation = 0.5;
@@ -348,14 +404,19 @@ fn a_drawing_round_trips_and_is_byte_stable_after_the_first_save() {
     // the centred text's insertion point (derived from it) is not compared.
     // The rest is exact.
     for (got, expected) in got.iter().zip(&expected) {
-        let converted = ["circle", "ellipse", "mtext"].iter().any(|kind| got.starts_with(kind))
+        let converted = ["circle", "ellipse", "mtext"]
+            .iter()
+            .any(|kind| got.starts_with(kind))
             || got.contains("Aligned")
             || got.contains("Center");
         if !converted {
             assert_eq!(got, expected);
         }
     }
-    assert_eq!(blocks(&read), [("Inner".to_string(), 1), ("Outer".to_string(), 1)]);
+    assert_eq!(
+        blocks(&read),
+        [("Inner".to_string(), 1), ("Outer".to_string(), 1)]
+    );
 
     let (second, _) = Ifcx.write(&read).unwrap();
     let (read_again, _) = Ifcx.read(&second).unwrap();
@@ -380,7 +441,9 @@ fn nested_blocks_round_trip() {
 
 #[test]
 fn complex_line_patterns_round_trip() {
-    let (document, _) = Ifcx.read(include_bytes!("fixtures/complex-line-patterns.ifcx")).unwrap();
+    let (document, _) = Ifcx
+        .read(include_bytes!("fixtures/complex-line-patterns.ifcx"))
+        .unwrap();
     let audit = document.audit();
     assert_eq!(audit.error_count(), 0, "{audit:#?}");
     let complex = document
@@ -401,7 +464,15 @@ fn complex_line_patterns_round_trip() {
                 let elements: Vec<_> = linetype
                     .elements
                     .iter()
-                    .map(|e| format!("{} {:?}", e.length, e.complex.as_ref().map(|c| (&c.content, c.scale, c.rotation, c.offset))))
+                    .map(|e| {
+                        format!(
+                            "{} {:?}",
+                            e.length,
+                            e.complex
+                                .as_ref()
+                                .map(|c| (&c.content, c.scale, c.rotation, c.offset))
+                        )
+                    })
                     .collect();
                 format!("{} {:?}", linetype.name, elements)
             })
@@ -434,17 +505,30 @@ fn fixtures_settle_after_the_first_save() {
         assert!(losses.is_empty(), "{name}: {losses:?}");
         let (again, _) = Ifcx.read(&first).unwrap();
         // The first save settles converted lengths to about 1e-12.
-        let settled = |document: &Document| geometry(document).into_iter().map(rounded).collect::<Vec<_>>();
+        let settled = |document: &Document| {
+            geometry(document)
+                .into_iter()
+                .map(rounded)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(settled(&again), settled(&document), "{name}");
         let (a, b) = (sheets(&again), sheets(&document));
-        assert!(a == b, "{name}: {}", difference(&a.join("\n"), &b.join("\n")));
+        assert!(
+            a == b,
+            "{name}: {}",
+            difference(&a.join("\n"), &b.join("\n"))
+        );
         // What IFCX gave is a sound DWG drawing.
         let (dwg, _) = opencaddocument::Dwg.write(&document).unwrap();
         let (from_dwg, _) = opencaddocument::Dwg.read(&dwg).unwrap();
         assert_eq!(from_dwg.audit().error_count(), 0, "{name}");
         assert_eq!(sheets(&from_dwg).len(), sheets(&document).len(), "{name}");
         let (second, _) = Ifcx.write(&again).unwrap();
-        assert_eq!(without_timestamp(&second), without_timestamp(&first), "{name}");
+        assert_eq!(
+            without_timestamp(&second),
+            without_timestamp(&first),
+            "{name}"
+        );
     }
 }
 
@@ -472,7 +556,10 @@ fn a_patterned_hatch_round_trips() {
         });
     }
     let mut outer = BoundaryPath::new();
-    outer.edges.push(BoundaryEdge::Line(LineEdge { start: Vector2::new(0.0, 0.0), end: Vector2::new(10.0, 0.0) }));
+    outer.edges.push(BoundaryEdge::Line(LineEdge {
+        start: Vector2::new(0.0, 0.0),
+        end: Vector2::new(10.0, 0.0),
+    }));
     outer.edges.push(BoundaryEdge::CircularArc(CircularArcEdge {
         center: Vector2::new(10.0, 5.0),
         radius: 5.0,
@@ -482,7 +569,10 @@ fn a_patterned_hatch_round_trips() {
         end_angle: 3.0 * std::f64::consts::FRAC_PI_2,
         counter_clockwise: false,
     }));
-    outer.edges.push(BoundaryEdge::Line(LineEdge { start: Vector2::new(10.0, 10.0), end: Vector2::new(0.0, 0.0) }));
+    outer.edges.push(BoundaryEdge::Line(LineEdge {
+        start: Vector2::new(10.0, 10.0),
+        end: Vector2::new(0.0, 0.0),
+    }));
     hatch.paths.push(outer);
     let mut hole = BoundaryPath::new();
     hole.edges.push(BoundaryEdge::CircularArc(CircularArcEdge {
@@ -493,13 +583,20 @@ fn a_patterned_hatch_round_trips() {
         counter_clockwise: true,
     }));
     hatch.paths.push(hole);
-    document.add_entity(EntityType::Hatch(Box::new(hatch))).unwrap();
+    document
+        .add_entity(EntityType::Hatch(Box::new(hatch)))
+        .unwrap();
 
     let (first, losses) = Ifcx.write(&document).unwrap();
     assert!(losses.is_empty(), "{losses:?}");
     let (read, losses) = Ifcx.read(&first).unwrap();
     assert!(losses.is_empty(), "{losses:?}");
-    let settled = |document: &Document| geometry(document).into_iter().map(rounded).collect::<Vec<_>>();
+    let settled = |document: &Document| {
+        geometry(document)
+            .into_iter()
+            .map(rounded)
+            .collect::<Vec<_>>()
+    };
     assert_eq!(settled(&read), settled(&document));
     let (second, _) = Ifcx.write(&read).unwrap();
     assert_eq!(without_timestamp(&second), without_timestamp(&first));
@@ -539,13 +636,17 @@ fn a_sheet_with_viewports_round_trips() {
     sheet.plot_flags.print_lineweights = true;
     let mut sheet_viewport = Viewport::new();
     sheet_viewport.id = 1;
-    document.add_entity_to_layout(EntityType::Viewport(Box::new(sheet_viewport)), "Layout1").unwrap();
+    document
+        .add_entity_to_layout(EntityType::Viewport(Box::new(sheet_viewport)), "Layout1")
+        .unwrap();
     let mut frame = LwPolyline::new();
     for (x, y) in [(20.0, 20.0), (200.0, 20.0), (200.0, 150.0), (20.0, 150.0)] {
         frame.vertices.push(LwVertex::new(Vector2::new(x, y)));
     }
     frame.is_closed = true;
-    let frame = document.add_entity_to_layout(EntityType::LwPolyline(frame), "Layout1").unwrap();
+    let frame = document
+        .add_entity_to_layout(EntityType::LwPolyline(frame), "Layout1")
+        .unwrap();
     let mut viewport = Viewport::new();
     viewport.id = 2;
     viewport.center = Vector3::new(110.0, 85.0, 0.0);
@@ -556,7 +657,9 @@ fn a_sheet_with_viewports_round_trips() {
     viewport.frozen_layers = vec![hidden];
     viewport.status.non_rectangular_clipping = true;
     viewport.clip_boundary_handle = frame;
-    document.add_entity_to_layout(EntityType::Viewport(Box::new(viewport)), "Layout1").unwrap();
+    document
+        .add_entity_to_layout(EntityType::Viewport(Box::new(viewport)), "Layout1")
+        .unwrap();
 
     let (first, losses) = Ifcx.write(&document).unwrap();
     assert!(losses.is_empty(), "{losses:?}");
@@ -564,7 +667,10 @@ fn a_sheet_with_viewports_round_trips() {
     assert!(losses.is_empty(), "{losses:?}");
     assert_eq!(read.audit().error_count(), 0);
     let sheet = sheets(&read).join("\n");
-    assert!(sheet.contains("420x297") && sheet.contains("print_lineweights: true"), "{sheet}");
+    assert!(
+        sheet.contains("420x297") && sheet.contains("print_lineweights: true"),
+        "{sheet}"
+    );
     let viewport = read
         .entities()
         .find_map(|entity| match entity {
@@ -572,8 +678,14 @@ fn a_sheet_with_viewports_round_trips() {
             _ => None,
         })
         .expect("model viewport");
-    assert_eq!(viewport.frozen_layers, vec![read.layers.get("Hidden").unwrap().handle]);
-    assert!(matches!(read.get_entity(viewport.clip_boundary_handle), Some(EntityType::LwPolyline(_))));
+    assert_eq!(
+        viewport.frozen_layers,
+        vec![read.layers.get("Hidden").unwrap().handle]
+    );
+    assert!(matches!(
+        read.get_entity(viewport.clip_boundary_handle),
+        Some(EntityType::LwPolyline(_))
+    ));
     assert_eq!((viewport.view_height, viewport.width), (1300.0, 180.0));
     let (second, _) = Ifcx.write(&read).unwrap();
     assert_eq!(without_timestamp(&second), without_timestamp(&first));
@@ -593,7 +705,8 @@ fn a_dimension_with_its_own_overrides_round_trips() {
     style.dimpost = "<> mm".to_string();
     style.dimtad = 1;
     document.dim_styles.add(style).unwrap();
-    let mut dimension = DimensionLinear::new(Vector3::new(0.0, 0.0, 0.0), Vector3::new(1200.0, 0.0, 0.0));
+    let mut dimension =
+        DimensionLinear::new(Vector3::new(0.0, 0.0, 0.0), Vector3::new(1200.0, 0.0, 0.0));
     dimension.definition_point = Vector3::new(0.0, 400.0, 0.0);
     dimension.rotation = 0.0;
     let base = &mut dimension.base;
@@ -615,7 +728,11 @@ fn a_dimension_with_its_own_overrides_round_trips() {
         record.add_value(value);
     }
     base.common.extended_data.upsert_record(record);
-    document.add_entity(EntityType::Dimension(Box::new(Dimension::Linear(dimension)))).unwrap();
+    document
+        .add_entity(EntityType::Dimension(Box::new(Dimension::Linear(
+            dimension,
+        ))))
+        .unwrap();
 
     let (first, losses) = Ifcx.write(&document).unwrap();
     assert!(losses.is_empty(), "{losses:?}");
@@ -623,7 +740,16 @@ fn a_dimension_with_its_own_overrides_round_trips() {
     assert!(losses.is_empty(), "{losses:?}");
     assert_eq!(read.audit().error_count(), 0);
     let style = read.dim_styles.get("Arch").unwrap();
-    assert_eq!((style.dimtxt, style.dimasz, style.dimdec, style.dimpost.as_str(), style.dimtad), (2.5, 3.0, 1, "<> mm", 1));
+    assert_eq!(
+        (
+            style.dimtxt,
+            style.dimasz,
+            style.dimdec,
+            style.dimpost.as_str(),
+            style.dimtad
+        ),
+        (2.5, 3.0, 1, "<> mm", 1)
+    );
     let dimension = read
         .entities()
         .find_map(|entity| match entity {
@@ -636,9 +762,17 @@ fn a_dimension_with_its_own_overrides_round_trips() {
     assert!(dimension.text_user_positioned && dimension.flip_arrow1);
     assert_eq!(dimension.text_middle_point, Vector3::new(700.0, 450.0, 0.0));
     assert_eq!(dimension.actual_measurement, 1200.0);
-    let overrides = dimension.common.extended_data.get_record("ACAD").unwrap().values.clone();
+    let overrides = dimension
+        .common
+        .extended_data
+        .get_record("ACAD")
+        .unwrap()
+        .values
+        .clone();
     let has = |code: i16, value: i16| {
-        overrides.windows(2).any(|pair| pair == [XDataValue::Integer16(code), XDataValue::Integer16(value)])
+        overrides
+            .windows(2)
+            .any(|pair| pair == [XDataValue::Integer16(code), XDataValue::Integer16(value)])
     };
     assert!(has(271, 3) && has(176, 1), "{overrides:?}");
     let (second, _) = Ifcx.write(&read).unwrap();

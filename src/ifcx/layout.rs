@@ -11,20 +11,20 @@ use acadrust::tables::VPort;
 use ifccad::geometry_kernel::{CoordinateFrame3, CoordinateLengthUnit, Point2, Point3};
 use ifccad::plot_kernel::{
     validate_layout_output, LayoutMedia, LayoutOutputKind, MediaUnit, PlotArea, PlotMapping,
-    PlotOffsetReference, PlotOptions, PlotOutput, PlotPage, PlotPlacement, PlotRect,
-    PlotRotation, PlotScale, PlotSettings, PlotUnit, ShadedPlot, ShadedPlotMode,
-    ShadedPlotQuality, ShadedPlotQualityMode,
+    PlotOffsetReference, PlotOptions, PlotOutput, PlotPage, PlotPlacement, PlotRect, PlotRotation,
+    PlotScale, PlotSettings, PlotUnit, ShadedPlot, ShadedPlotMode, ShadedPlotQuality,
+    ShadedPlotQualityMode,
 };
 use ifccad::workspace_kernel::{
     validate_canvas_frame, validate_grid, validate_snap, validate_view, WorkspaceCanvasFrame,
-    WorkspaceClip, WorkspaceClipMode, WorkspaceGrid, WorkspaceGridStyle,
-    WorkspaceIsometricPlane, WorkspaceProjection, WorkspaceRenderMode, WorkspaceSnap,
-    WorkspaceSnapStyle, WorkspaceView, WorkspaceViewKind,
+    WorkspaceClip, WorkspaceClipMode, WorkspaceGrid, WorkspaceGridStyle, WorkspaceIsometricPlane,
+    WorkspaceProjection, WorkspaceRenderMode, WorkspaceSnap, WorkspaceSnapStyle, WorkspaceView,
+    WorkspaceViewKind,
 };
 use ifccad::{
     validate_ifccad_viewport_parameters, IfccadDrawingWorkspaceState, IfccadLayoutSettings,
-    IfccadModelViewState, IfccadModelWindow, IfccadPaperCanvas, IfccadPaperLayout,
-    IfccadViewport, IfccadViewportClipMode, IfccadViewportDepthClip, IfccadViewportFrame,
+    IfccadModelViewState, IfccadModelWindow, IfccadPaperCanvas, IfccadPaperLayout, IfccadViewport,
+    IfccadViewportClipMode, IfccadViewportDepthClip, IfccadViewportFrame,
     IfccadViewportLayerOverride, IfccadViewportPaperClip, IfccadViewportProjection,
     IfccadViewportRenderMode, IfccadViewportView, IfccadViewportWorkspace,
 };
@@ -119,7 +119,9 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
     let active_layout_id = match header.show_model_space {
         true => Some(writer.drawing.model.id),
         false => document.objects.values().find_map(|object| match object {
-            ObjectType::Layout(layout) if layout.block_record == header.paper_space_block_handle => {
+            ObjectType::Layout(layout)
+                if layout.block_record == header.paper_space_block_handle =>
+            {
                 writer.layout_ids.get(&layout.handle).copied()
             }
             _ => None,
@@ -137,9 +139,7 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
 
 /// The paper-space viewport that is the sheet itself (number 1).
 fn overall_viewport(document: &Document, layout: &Layout) -> Option<Handle> {
-    let is_overall = |handle: &Handle| {
-        matches!(document.get_entity(*handle), Some(EntityType::Viewport(v)) if v.id == 1)
-    };
+    let is_overall = |handle: &Handle| matches!(document.get_entity(*handle), Some(EntityType::Viewport(v)) if v.id == 1);
     if is_overall(&layout.viewport) {
         return Some(layout.viewport);
     }
@@ -164,7 +164,10 @@ pub(super) fn viewport_out(writer: &mut Writer, viewport: &Viewport) -> Option<I
         .frozen_layers
         .iter()
         .filter_map(|handle| {
-            let layer = document.layers.iter().find(|layer| layer.handle == *handle)?;
+            let layer = document
+                .layers
+                .iter()
+                .find(|layer| layer.handle == *handle)?;
             writer.layers.get(&layer.name.to_ascii_lowercase()).copied()
         })
         .map(|layer_id| IfccadViewportLayerOverride {
@@ -363,7 +366,12 @@ fn aids_out(
     Some((grid, snap, ucs))
 }
 
-fn grid_out(enabled: bool, spacing: [f64; 2], major: i16, flags: &GridFlags) -> Option<WorkspaceGrid> {
+fn grid_out(
+    enabled: bool,
+    spacing: [f64; 2],
+    major: i16,
+    flags: &GridFlags,
+) -> Option<WorkspaceGrid> {
     let grid = WorkspaceGrid {
         enabled,
         spacing: Point2::new(spacing[0], spacing[1]),
@@ -394,7 +402,8 @@ fn stored_ucs_out(
     if let Some(id) = named {
         return Some(IfccadUcsSelection::Named(*id));
     }
-    let frame = CoordinateFrame3::try_new(point3(origin), kernel_vector(x), kernel_vector(y)).ok()?;
+    let frame =
+        CoordinateFrame3::try_new(point3(origin), kernel_vector(x), kernel_vector(y)).ok()?;
     Some(match frame == CoordinateFrame3::default() {
         true => IfccadUcsSelection::World,
         false => IfccadUcsSelection::Unnamed(frame),
@@ -563,7 +572,10 @@ pub(super) fn read(
     let mut owners = Vec::new();
     for (index, paper) in papers.into_iter().enumerate() {
         // The first sheet takes over the empty one every new drawing has.
-        let handle = match (index, layout_handle(document, document.header.paper_space_block_handle)) {
+        let handle = match (
+            index,
+            layout_handle(document, document.header.paper_space_block_handle),
+        ) {
             (0, Some(handle)) => {
                 rename_layout(document, handle, &paper.name);
                 handle
@@ -651,7 +663,13 @@ pub(super) fn finish(
                 number += 1;
                 viewport.id = number;
                 if let (Some(workspace), Some(ucs)) = (&source.workspace, ucs) {
-                    aids_in(&workspace.grid, &workspace.snap, workspace.use_stored_ucs, ucs, viewport);
+                    aids_in(
+                        &workspace.grid,
+                        &workspace.snap,
+                        workspace.use_stored_ucs,
+                        ucs,
+                        viewport,
+                    );
                 }
                 if let Some(boundary) = boundary {
                     viewport.clip_boundary_handle = boundary;
@@ -721,10 +739,13 @@ fn position_by_tab(drawing: &IfccadDocument, paper: &IfccadPaperLayout) -> usize
 }
 
 fn layout_handle(document: &Document, record: Handle) -> Option<Handle> {
-    document.objects.iter().find_map(|(handle, object)| match object {
-        ObjectType::Layout(layout) if layout.block_record == record => Some(*handle),
-        _ => None,
-    })
+    document
+        .objects
+        .iter()
+        .find_map(|(handle, object)| match object {
+            ObjectType::Layout(layout) if layout.block_record == record => Some(*handle),
+            _ => None,
+        })
 }
 
 fn overall_viewport_in(document: &Document, layout: Handle) -> Option<Handle> {
@@ -879,7 +900,13 @@ pub(super) fn has_property_overrides(source: &IfccadViewport) -> bool {
 }
 
 fn canvas_in(canvas: &IfccadPaperCanvas, ucs: StoredUcs, viewport: &mut Viewport) {
-    aids_in(&canvas.grid, &canvas.snap, canvas.use_stored_ucs, ucs, viewport);
+    aids_in(
+        &canvas.grid,
+        &canvas.snap,
+        canvas.use_stored_ucs,
+        ucs,
+        viewport,
+    );
     if let Some(frame) = canvas.frame {
         viewport.center = vector(frame.center.components());
         viewport.width = frame.width;
@@ -909,7 +936,11 @@ struct StoredUcs {
     elevation: f64,
 }
 
-fn stored_ucs_in(selection: IfccadUcsSelection, drawing: &IfccadDocument, document: &Document) -> StoredUcs {
+fn stored_ucs_in(
+    selection: IfccadUcsSelection,
+    drawing: &IfccadDocument,
+    document: &Document,
+) -> StoredUcs {
     let frame = |frame: CoordinateFrame3| {
         (
             vector(frame.origin().components()),
@@ -920,14 +951,19 @@ fn stored_ucs_in(selection: IfccadUcsSelection, drawing: &IfccadDocument, docume
     let (handle, (origin, x, y), elevation) = match selection {
         IfccadUcsSelection::World => (Handle::NULL, frame(CoordinateFrame3::default()), 0.0),
         IfccadUcsSelection::Unnamed(value) => (Handle::NULL, frame(value), 0.0),
-        IfccadUcsSelection::Named(id) => match drawing.ucs_definitions.iter().find(|u| u.id == id) {
-            Some(ucs) => (
-                document.ucss.get(&ucs.name).map_or(Handle::NULL, |u| u.handle),
-                frame(ucs.frame),
-                ucs.elevation,
-            ),
-            None => (Handle::NULL, frame(CoordinateFrame3::default()), 0.0),
-        },
+        IfccadUcsSelection::Named(id) => {
+            match drawing.ucs_definitions.iter().find(|u| u.id == id) {
+                Some(ucs) => (
+                    document
+                        .ucss
+                        .get(&ucs.name)
+                        .map_or(Handle::NULL, |u| u.handle),
+                    frame(ucs.frame),
+                    ucs.elevation,
+                ),
+                None => (Handle::NULL, frame(CoordinateFrame3::default()), 0.0),
+            }
+        }
     };
     StoredUcs {
         handle,
@@ -1032,9 +1068,18 @@ fn settings_out(layout: &Layout, model: bool, losses: &mut Losses) -> IfccadLayo
         height: layout.paper_height,
     });
     let limits = (layout.min_limits != layout.max_limits)
-        .then(|| rect(layout.min_limits.0, layout.min_limits.1, layout.max_limits.0, layout.max_limits.1))
+        .then(|| {
+            rect(
+                layout.min_limits.0,
+                layout.min_limits.1,
+                layout.max_limits.0,
+                layout.max_limits.1,
+            )
+        })
         .flatten();
-    let plot_settings = media.as_ref().and_then(|media| plot_out(layout, media, model));
+    let plot_settings = media
+        .as_ref()
+        .and_then(|media| plot_out(layout, media, model));
     let has_media = media.is_some();
     let mut settings = IfccadLayoutSettings {
         media,
@@ -1252,7 +1297,11 @@ fn plot_in(layout: &mut Layout, width: f64, height: f64, to_mm: f64, plot: &Plot
         layout.shade_plot_dpi = i16::try_from(dpi).unwrap_or(i16::MAX);
     }
     layout.plot_flags.plot_plot_styles = plot.output.apply_plot_styles;
-    layout.plot_style_sheet = plot.output.plot_style_table_name.clone().unwrap_or_default();
+    layout.plot_style_sheet = plot
+        .output
+        .plot_style_table_name
+        .clone()
+        .unwrap_or_default();
     let options = plot.options;
     layout.plot_flags.plot_viewport_borders = options.plot_viewport_borders;
     layout.plot_flags.draw_viewports_first = options.plot_paper_space_last;
@@ -1266,16 +1315,44 @@ fn plot_scale_out(layout: &Layout) -> Option<PlotScale> {
     if layout.plot_flags.use_standard_scale {
         // Standard scales by their index, as output : drawing lengths.
         const STANDARD: [(f64, f64); 32] = [
-            (1., 1536.), (1., 768.), (1., 384.), (1., 192.), (1., 128.), (1., 96.), (1., 64.),
-            (1., 48.), (1., 32.), (1., 24.), (1., 16.), (1., 12.), (1., 4.), (1., 2.), (1., 1.),
-            (1., 1.), (1., 2.), (1., 4.), (1., 8.), (1., 10.), (1., 16.), (1., 20.), (1., 30.),
-            (1., 40.), (1., 50.), (1., 100.), (2., 1.), (4., 1.), (8., 1.), (10., 1.), (100., 1.),
+            (1., 1536.),
+            (1., 768.),
+            (1., 384.),
+            (1., 192.),
+            (1., 128.),
+            (1., 96.),
+            (1., 64.),
+            (1., 48.),
+            (1., 32.),
+            (1., 24.),
+            (1., 16.),
+            (1., 12.),
+            (1., 4.),
+            (1., 2.),
+            (1., 1.),
+            (1., 1.),
+            (1., 2.),
+            (1., 4.),
+            (1., 8.),
+            (1., 10.),
+            (1., 16.),
+            (1., 20.),
+            (1., 30.),
+            (1., 40.),
+            (1., 50.),
+            (1., 100.),
+            (2., 1.),
+            (4., 1.),
+            (8., 1.),
+            (10., 1.),
+            (100., 1.),
             (1000., 1.),
         ];
         return match layout.plot_scale_type {
             0 => Some(PlotScale::FitToArea),
             index => {
-                let (output_length, scope_length) = *STANDARD.get(usize::try_from(index - 1).ok()?)?;
+                let (output_length, scope_length) =
+                    *STANDARD.get(usize::try_from(index - 1).ok()?)?;
                 Some(PlotScale::Fixed {
                     output_length,
                     scope_length,
@@ -1283,12 +1360,16 @@ fn plot_scale_out(layout: &Layout) -> Option<PlotScale> {
             }
         };
     }
-    let (output_length, scope_length) = (layout.plot_scale_numerator, layout.plot_scale_denominator);
-    (output_length > 0.0 && scope_length > 0.0 && output_length.is_finite() && scope_length.is_finite())
-        .then_some(PlotScale::Fixed {
-            output_length,
-            scope_length,
-        })
+    let (output_length, scope_length) =
+        (layout.plot_scale_numerator, layout.plot_scale_denominator);
+    (output_length > 0.0
+        && scope_length > 0.0
+        && output_length.is_finite()
+        && scope_length.is_finite())
+    .then_some(PlotScale::Fixed {
+        output_length,
+        scope_length,
+    })
 }
 
 /// Whether a layout's plot settings are those of a fresh layout.
