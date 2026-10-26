@@ -141,16 +141,20 @@ pub(super) fn read(
         converted.flags.locked = layer.locked;
         converted.flags.frozen_in_new_viewport = layer.frozen_in_new_viewports;
         converted.is_plottable = layer.plottable;
-        match document.layers.get_mut(&layer.name) {
+        let handle = match document.layers.get_mut(&layer.name) {
             Some(existing) => {
                 converted.handle = existing.handle;
                 *existing = converted;
+                existing.handle
             }
             None => {
                 converted.handle = document.allocate_handle();
+                let handle = converted.handle;
                 document.layers.add(converted)?;
+                handle
             }
-        }
+        };
+        names.layer_handles.insert(layer.id, handle);
     }
 
     let mut ucs_names = HashMap::new();
@@ -339,14 +343,13 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
         });
     }
 
-    let mut ucs_ids = HashMap::new();
     for ucs in document.ucss.iter() {
         let Some(frame) = frame_out(ucs.origin, ucs.x_axis, ucs.y_axis) else {
             writer.losses.note(format!("UCS {}", ucs.name));
             continue;
         };
         let id = writer.drawing.id_counters.allocate_ucs_id()?;
-        ucs_ids.insert(ucs.name.to_ascii_lowercase(), (id, frame));
+        writer.ucs_ids.insert(ucs.name.to_ascii_lowercase(), id);
         writer.drawing.ucs_definitions.push(IfccadUcsDefinition {
             id,
             name: ucs.name.clone(),
@@ -354,8 +357,8 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
             elevation: ucs.elevation,
         });
     }
-    let current = match ucs_ids.get(&header.model_space_ucs_name.to_ascii_lowercase()) {
-        Some((id, _)) => Some(IfccadUcsSelection::Named(*id)),
+    let current = match writer.ucs_ids.get(&header.model_space_ucs_name.to_ascii_lowercase()) {
+        Some(id) => Some(IfccadUcsSelection::Named(*id)),
         None => frame_out(
             header.model_space_ucs_origin,
             header.model_space_ucs_x_axis,

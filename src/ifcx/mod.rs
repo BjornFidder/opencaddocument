@@ -22,16 +22,17 @@ use ifccad::text::{
     TextVerticalAlignment as Vertical,
 };
 use ifccad::{
-    encode_ifccad_document, load_ifccad_bytes, IfccadBlockDefinition, IfccadBlockTransform,
+    encode_ifccad_document, load_ifccad_bytes, IfccadBlockDefinition, IfccadPaperLayout, IfccadBlockTransform,
     IfccadColor, IfccadDocument, IfccadEntity, IfccadEntityAppearance, IfccadEntityKind,
     IfccadFilledQuadrilateral, IfccadHeader, IfccadLinePatternGeneration, IfccadLinePatternId,
     IfccadMode, IfccadNativeEntity, IfccadPlacement, IfccadPlanarPolylineWidths,
-    IfccadSymbolSourceId, IfccadText, IfccadTextStyleId,
+    IfccadSymbolSourceId, IfccadText, IfccadTextStyleId, IfccadUcsId, IfccadUcsSelection,
 };
 
 use crate::{snap, Document, Error, Format, Loss, Placement};
 
 mod hatch;
+mod layout;
 mod tables;
 mod text;
 
@@ -175,9 +176,13 @@ impl Format for Ifcx {
             document.add_entity(EntityType::Block(start))?;
             document.add_entity(EntityType::BlockEnd(end))?;
         }
+        let papers = layout::read(&drawing, &mut document, &mut losses)?;
+        let mut sheets: Vec<&IfccadPaperLayout> = drawing.paper_layouts.iter().collect();
+        sheets.sort_by_key(|paper| paper.tab_index);
+        let sheets = papers.iter().zip(sheets).map(|(owner, paper)| (*owner, &paper.entities));
         let model = (Handle::NULL, &drawing.model.entities);
         let mut handles = HashMap::new();
-        for (owner, entities) in members.into_iter().chain([model]) {
+        for (owner, entities) in members.into_iter().chain(sheets).chain([model]) {
             for entity in entities {
                 if let Some(handle) = add_in(&mut document, entity, owner, &names, &mut losses)? {
                     handles.insert(entity.id(), handle);
@@ -186,7 +191,8 @@ impl Format for Ifcx {
         }
         // Hatch boundaries refer to entities that may come after them.
         let scopes = drawing.blocks.iter().map(|block| &block.entities);
-        for entity in scopes.chain([&drawing.model.entities]).flatten() {
+        let papers_entities = drawing.paper_layouts.iter().map(|paper| &paper.entities);
+        for entity in scopes.chain(papers_entities).chain([&drawing.model.entities]).flatten() {
             let Some(IfccadNativeEntity {
                 id,
                 kind: IfccadEntityKind::Hatch(hatch),
@@ -208,9 +214,7 @@ impl Format for Ifcx {
                     .collect();
             }
         }
-        if !drawing.paper_layouts.is_empty() {
-            losses.note("paper layouts");
-        }
+        layout::finish(&drawing, &mut document, &names, &papers, &handles)?;
         Ok((document, losses.into_vec()))
     }
 
@@ -247,6 +251,9 @@ impl Format for Ifcx {
             blocks: HashMap::new(),
             entity_ids: HashMap::new(),
             hatch_sources: HashMap::new(),
+            viewport_clips: HashMap::new(),
+            layout_ids: HashMap::new(),
+            ucs_ids: HashMap::new(),
         };
 
         tables::write(&mut writer)?;
@@ -263,20 +270,15 @@ impl Format for Ifcx {
                 writer.block(&record.name)?;
             }
         }
+        layout::write(&mut writer)?;
+        layout::link_clips(&mut writer);
         let ids = &writer.entity_ids;
         let sources = &writer.hatch_sources;
-        link_hatches(&mut writer.drawing.model.entities, ids, sources);
-        for block in &mut writer.drawing.blocks {
-            link_hatches(&mut block.entities, ids, sources);
-        }
-        let paper: usize = document
-            .block_records
-            .iter()
-            .filter(|record| record.is_paper_space())
-            .map(|record| record.entity_handles.len())
-            .sum();
-        if paper > 0 {
-            writer.losses.note(format!("{paper} paper-space entities"));
+        let drawing = &mut writer.drawing;
+        let scopes = drawing.blocks.iter_mut().map(|block| &mut block.entities);
+        let papers = drawing.paper_layouts.iter_mut().map(|paper| &mut paper.entities);
+        for entities in scopes.chain(papers).chain([&mut drawing.model.entities]) {
+            link_hatches(entities, ids, sources);
         }
 
         let encoded = encode_ifccad_document(&writer.drawing)?;
@@ -323,6 +325,7 @@ fn link_hatches(
 #[derive(Default)]
 struct Names {
     layers: HashMap<u64, String>,
+    layer_handles: HashMap<u64, Handle>,
     line_patterns: HashMap<IfccadLinePatternId, String>,
     styles: HashMap<IfccadTextStyleId, String>,
     style_handles: HashMap<IfccadTextStyleId, Handle>,
@@ -374,6 +377,11 @@ struct Writer<'a> {
     entity_ids: HashMap<Handle, u64>,
     /// Boundary source handles of each hatch loop, by hatch id.
     hatch_sources: HashMap<u64, Vec<Vec<Handle>>>,
+    /// Clip boundary of each clipped viewport, by viewport handle.
+    viewport_clips: HashMap<Handle, Handle>,
+    /// Paper layout ids by LAYOUT object handle.
+    layout_ids: HashMap<Handle, u64>,
+    ucs_ids: HashMap<String, IfccadUcsId>,
 }
 
 impl Writer<'_> {
@@ -660,6 +668,7 @@ impl Writer<'_> {
             }
             EntityType::MText(mtext) => return Ok(text::mtext_out(self, mtext)),
             EntityType::Hatch(hatch) => return Ok(hatch::hatch_out(hatch, &mut self.losses)),
+            EntityType::Viewport(viewport) => return Ok(layout::viewport_out(self, viewport)),
             EntityType::Insert(insert) => {
                 if insert.is_array() {
                     return Ok(None);
@@ -910,6 +919,12 @@ fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Opt
         }
         IfccadEntityKind::MText(mtext) => return text::mtext_in(mtext, names, losses),
         IfccadEntityKind::Hatch(hatch) => hatch::hatch_in(hatch),
+        IfccadEntityKind::Viewport(viewport) => {
+            if layout::has_property_overrides(viewport) {
+                losses.note("viewport layer property overrides");
+            }
+            layout::viewport_in(viewport, names)
+        }
         IfccadEntityKind::BlockInstance {
             definition_id,
             transform,

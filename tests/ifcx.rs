@@ -84,6 +84,53 @@ fn geometry(document: &Document) -> Vec<String> {
     out
 }
 
+/// The text around the first place `a` and `b` differ.
+fn difference(a: &str, b: &str) -> String {
+    let at = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
+    let window = |text: &str| text.chars().skip(at.saturating_sub(150)).take(300).collect::<String>();
+    format!("\n  got: …{}…\n want: …{}…", window(a), window(b))
+}
+
+/// Each layout's name, sheet and plot settings and entities, in tab order.
+fn sheets(document: &Document) -> Vec<String> {
+    use opencaddocument::objects::ObjectType;
+    let mut layouts: Vec<_> = document
+        .objects
+        .values()
+        .filter_map(|object| match object {
+            ObjectType::Layout(layout) => Some(layout),
+            _ => None,
+        })
+        .collect();
+    layouts.sort_by_key(|layout| layout.tab_order);
+    layouts
+        .into_iter()
+        .map(|layout| {
+            let record = document.block_records.iter().find(|r| r.handle == layout.block_record);
+            let mut entities: Vec<String> = record
+                .map(|record| {
+                    document
+                        .entities_in_block(&record.name)
+                        .map(|entity| format!("{entity:?}"))
+                        .collect()
+                })
+                .unwrap_or_default();
+            entities.sort();
+            rounded(format!(
+                "{} {} {}x{} {} {} {:?} {:?}",
+                layout.name,
+                layout.tab_order,
+                layout.paper_width,
+                layout.paper_height,
+                layout.plot_type,
+                layout.plot_scale_factor,
+                layout.plot_flags,
+                entities
+            ))
+        })
+        .collect()
+}
+
 /// Each block's name and member geometry.
 fn blocks(document: &Document) -> Vec<(String, usize)> {
     let mut out: Vec<_> = document
@@ -96,8 +143,17 @@ fn blocks(document: &Document) -> Vec<(String, usize)> {
     out
 }
 
-/// `text` with every number rounded to nine significant digits.
+/// `text` with every number rounded to nine significant digits and handle
+/// values dropped (a reader allocates them in its own order).
 fn rounded(text: String) -> String {
+    let text = text
+        .split("Handle(")
+        .enumerate()
+        .map(|(index, part)| match index {
+            0 => part.to_string(),
+            _ => format!("Handle(#{}", part.trim_start_matches(|c: char| c.is_ascii_digit())),
+        })
+        .collect::<String>();
     let mut out = String::new();
     let mut number = String::new();
     let flush = |number: &mut String, out: &mut String| {
@@ -367,6 +423,13 @@ fn fixtures_settle_after_the_first_save() {
         // The first save settles converted lengths to about 1e-12.
         let settled = |document: &Document| geometry(document).into_iter().map(rounded).collect::<Vec<_>>();
         assert_eq!(settled(&again), settled(&document), "{name}");
+        let (a, b) = (sheets(&again), sheets(&document));
+        assert!(a == b, "{name}: {}", difference(&a.join("\n"), &b.join("\n")));
+        // What IFCX gave is a sound DWG drawing.
+        let (dwg, _) = opencaddocument::Dwg.write(&document).unwrap();
+        let (from_dwg, _) = opencaddocument::Dwg.read(&dwg).unwrap();
+        assert_eq!(from_dwg.audit().error_count(), 0, "{name}");
+        assert_eq!(sheets(&from_dwg).len(), sheets(&document).len(), "{name}");
         let (second, _) = Ifcx.write(&again).unwrap();
         assert_eq!(without_timestamp(&second), without_timestamp(&first), "{name}");
     }
@@ -425,6 +488,80 @@ fn a_patterned_hatch_round_trips() {
     assert!(losses.is_empty(), "{losses:?}");
     let settled = |document: &Document| geometry(document).into_iter().map(rounded).collect::<Vec<_>>();
     assert_eq!(settled(&read), settled(&document));
+    let (second, _) = Ifcx.write(&read).unwrap();
+    assert_eq!(without_timestamp(&second), without_timestamp(&first));
+}
+
+#[test]
+fn a_sheet_with_viewports_round_trips() {
+    use opencaddocument::entities::Viewport;
+    use opencaddocument::objects::ObjectType;
+    use opencaddocument::tables::Layer;
+    let mut document = Document::new();
+    let mut hidden = Layer::new("Hidden");
+    hidden.handle = document.allocate_handle();
+    document.layers.add(hidden).unwrap();
+    let hidden = document.layers.get("Hidden").unwrap().handle;
+    let sheet = document
+        .objects
+        .values_mut()
+        .find_map(|object| match object {
+            ObjectType::Layout(layout) if layout.name == "Layout1" => Some(layout),
+            _ => None,
+        })
+        .unwrap();
+    sheet.paper_width = 420.0;
+    sheet.paper_height = 297.0;
+    sheet.paper_size = "ISO_A3_(420.00_x_297.00_MM)".to_string();
+    sheet.plot_paper_units = 1;
+    sheet.plot_type = 5;
+    sheet.plot_margin_left = 7.5;
+    sheet.plot_margin_bottom = 20.0;
+    sheet.plot_margin_right = 7.5;
+    sheet.plot_margin_top = 20.0;
+    sheet.plot_scale_numerator = 1.0;
+    sheet.plot_scale_denominator = 1.0;
+    sheet.plot_scale_factor = 1.0;
+    sheet.plot_flags.use_standard_scale = false;
+    sheet.plot_flags.print_lineweights = true;
+    let mut sheet_viewport = Viewport::new();
+    sheet_viewport.id = 1;
+    document.add_entity_to_layout(EntityType::Viewport(Box::new(sheet_viewport)), "Layout1").unwrap();
+    let mut frame = LwPolyline::new();
+    for (x, y) in [(20.0, 20.0), (200.0, 20.0), (200.0, 150.0), (20.0, 150.0)] {
+        frame.vertices.push(LwVertex::new(Vector2::new(x, y)));
+    }
+    frame.is_closed = true;
+    let frame = document.add_entity_to_layout(EntityType::LwPolyline(frame), "Layout1").unwrap();
+    let mut viewport = Viewport::new();
+    viewport.id = 2;
+    viewport.center = Vector3::new(110.0, 85.0, 0.0);
+    viewport.width = 180.0;
+    viewport.height = 130.0;
+    viewport.view_center = Vector3::new(500.0, 300.0, 0.0);
+    viewport.view_height = 1300.0;
+    viewport.frozen_layers = vec![hidden];
+    viewport.status.non_rectangular_clipping = true;
+    viewport.clip_boundary_handle = frame;
+    document.add_entity_to_layout(EntityType::Viewport(Box::new(viewport)), "Layout1").unwrap();
+
+    let (first, losses) = Ifcx.write(&document).unwrap();
+    assert!(losses.is_empty(), "{losses:?}");
+    let (read, losses) = Ifcx.read(&first).unwrap();
+    assert!(losses.is_empty(), "{losses:?}");
+    assert_eq!(read.audit().error_count(), 0);
+    let sheet = sheets(&read).join("\n");
+    assert!(sheet.contains("420x297") && sheet.contains("print_lineweights: true"), "{sheet}");
+    let viewport = read
+        .entities()
+        .find_map(|entity| match entity {
+            EntityType::Viewport(v) if v.id == 2 => Some(v.clone()),
+            _ => None,
+        })
+        .expect("model viewport");
+    assert_eq!(viewport.frozen_layers, vec![read.layers.get("Hidden").unwrap().handle]);
+    assert!(matches!(read.get_entity(viewport.clip_boundary_handle), Some(EntityType::LwPolyline(_))));
+    assert_eq!((viewport.view_height, viewport.width), (1300.0, 180.0));
     let (second, _) = Ifcx.write(&read).unwrap();
     assert_eq!(without_timestamp(&second), without_timestamp(&first));
 }
