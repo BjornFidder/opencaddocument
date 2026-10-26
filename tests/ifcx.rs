@@ -270,3 +270,39 @@ fn nested_blocks_round_trip() {
     assert_eq!(geometry(&again), geometry(&document));
     assert_eq!(blocks(&again), blocks(&document));
 }
+
+#[test]
+fn complex_line_patterns_round_trip() {
+    let (document, _) = Ifcx.read(include_bytes!("fixtures/complex-line-patterns.ifcx")).unwrap();
+    let audit = document.audit();
+    assert_eq!(audit.error_count(), 0, "{audit:#?}");
+    let complex = document
+        .line_types
+        .iter()
+        .filter(|linetype| linetype.elements.iter().any(|e| e.complex.is_some()))
+        .count();
+    assert!(complex > 0, "no complex linetype was read");
+
+    let (first, losses) = Ifcx.write(&document).unwrap();
+    assert!(losses.is_empty(), "{losses:?}");
+    let (again, _) = Ifcx.read(&first).unwrap();
+    let patterns = |document: &Document| -> Vec<String> {
+        let mut out: Vec<_> = document
+            .line_types
+            .iter()
+            .map(|linetype| {
+                let elements: Vec<_> = linetype
+                    .elements
+                    .iter()
+                    .map(|e| format!("{} {:?}", e.length, e.complex.as_ref().map(|c| (&c.content, c.scale, c.rotation, c.offset))))
+                    .collect();
+                format!("{} {:?}", linetype.name, elements)
+            })
+            .collect();
+        out.sort();
+        out
+    };
+    assert_eq!(patterns(&again), patterns(&document));
+    let (second, _) = Ifcx.write(&again).unwrap();
+    assert_eq!(without_timestamp(&second), without_timestamp(&first));
+}

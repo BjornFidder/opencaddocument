@@ -1,2 +1,2 @@
-`hello-cad.ifcx` and `hello-nested-blocks.ifcx` come from the test fixtures of
+The `.ifcx` files come from the test fixtures and conformance cases of
 [ifccad](https://github.com/OpenAEC-Foundation/ifccad) (MPL-2.0).

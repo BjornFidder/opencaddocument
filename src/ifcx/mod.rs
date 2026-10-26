@@ -2,7 +2,8 @@
 //! mapping between its drawing model and a [`Document`] lives here, so the two
 //! libraries never depend on each other.
 //!
-//! Layers, text styles, block definitions and the model-space lines, circles,
+//! Layers, line patterns (with their SHX and text symbols), text styles, UCSs,
+//! the point display, block definitions and the model-space lines, circles,
 //! arcs, ellipses, points, polylines, 2D solids, traces, single-line texts and
 //! block inserts map both ways. Everything else is reported as a [`Loss`].
 
@@ -13,22 +14,23 @@ use acadrust::entities::{
     Arc, Block, BlockEnd, Circle, Ellipse, EntityCommon, Insert, Line, LwPolyline, LwVertex,
     Point, Polyline3D, Solid, Text, TextHorizontalAlignment, TextVerticalAlignment,
 };
-use acadrust::tables::{BlockRecord, Layer, TextStyle};
+use acadrust::tables::BlockRecord;
 use acadrust::types::{Color, Handle, LineWeight, Matrix3, Transparency, Vector2, Vector3};
 use acadrust::EntityType;
 use ifccad::text::{
-    FontRequest, TextHorizontalAlignment as Horizontal, TextLayout, TextRun, TextStyleProperties,
-    TextVerticalAlignment as Vertical,
+    TextHorizontalAlignment as Horizontal, TextLayout, TextRun, TextVerticalAlignment as Vertical,
 };
 use ifccad::{
     encode_ifccad_document, load_ifccad_bytes, IfccadBlockDefinition, IfccadBlockTransform,
     IfccadColor, IfccadDocument, IfccadEntity, IfccadEntityAppearance, IfccadEntityKind,
-    IfccadFilledQuadrilateral, IfccadHeader, IfccadLayer, IfccadLayerAppearance,
-    IfccadLinePatternGeneration, IfccadLinePatternId, IfccadMode, IfccadNativeEntity,
-    IfccadPlacement, IfccadPlanarPolylineWidths, IfccadText, IfccadTextStyle, IfccadTextStyleId,
+    IfccadFilledQuadrilateral, IfccadHeader, IfccadLinePatternGeneration, IfccadLinePatternId,
+    IfccadMode, IfccadNativeEntity, IfccadPlacement, IfccadPlanarPolylineWidths,
+    IfccadSymbolSourceId, IfccadText, IfccadTextStyleId,
 };
 
 use crate::{snap, Document, Error, Format, Loss, Placement};
+
+mod tables;
 
 // Custom document properties that carry an IFCX file's identity through
 // editing, so a drawing read from IFCX is written back as the same drawing.
@@ -119,59 +121,7 @@ impl Format for Ifcx {
         }
 
         let mut names = Names::default();
-        for layer in &drawing.layers {
-            names.layers.insert(layer.id, layer.name.clone());
-            if layer.appearance.line_pattern != continuous(&drawing) {
-                losses.note(format!("the line pattern of layer {}", layer.name));
-            }
-            let mut converted = document
-                .layers
-                .get(&layer.name)
-                .cloned()
-                .unwrap_or_else(|| Layer::new(layer.name.clone()));
-            converted.color = color_in(&layer.appearance.color);
-            converted.line_weight = weight_in(layer.appearance.line_weight);
-            converted.flags.off = !layer.visible;
-            converted.flags.frozen = layer.frozen;
-            converted.flags.locked = layer.locked;
-            converted.is_plottable = layer.plottable;
-            match document.layers.get_mut(&layer.name) {
-                Some(existing) => *existing = converted,
-                None => {
-                    converted.handle = document.allocate_handle();
-                    document.layers.add(converted)?;
-                }
-            }
-        }
-
-        for style in &drawing.text_styles {
-            names.styles.insert(style.id, style.name.clone());
-            let properties = &style.properties;
-            let mut converted = document
-                .text_styles
-                .get(&style.name)
-                .cloned()
-                .unwrap_or_else(|| TextStyle::new(style.name.clone()));
-            converted.font_file = properties.font.cad_font_name.clone().unwrap_or_default();
-            converted.big_font_file = properties.font.big_font_name.clone().unwrap_or_default();
-            converted.true_type_font = properties.font.family.clone().unwrap_or_default();
-            converted.width_factor = properties.width_factor;
-            converted.oblique_angle = properties.oblique_angle;
-            converted.is_vertical = properties.vertical;
-            converted.height = properties.creation_height.unwrap_or(0.0);
-            if let Some(height) = properties.last_used_height {
-                converted.last_height = height;
-            }
-            converted.flags.backward = properties.creation_backward;
-            converted.flags.upside_down = properties.creation_upside_down;
-            match document.text_styles.get_mut(&style.name) {
-                Some(existing) => *existing = converted,
-                None => {
-                    converted.handle = document.allocate_handle();
-                    document.text_styles.add(converted)?;
-                }
-            }
-        }
+        tables::read(&drawing, &mut document, &mut names, &mut losses)?;
 
         // Every definition exists before any member is converted, so inserts
         // of blocks defined later in the file resolve.
@@ -209,11 +159,11 @@ impl Format for Ifcx {
         }
         for (owner, entities) in members {
             for entity in entities {
-                add_in(&mut document, entity, owner, &drawing, &names, &mut losses)?;
+                add_in(&mut document, entity, owner, &names, &mut losses)?;
             }
         }
         for entity in &drawing.model.entities {
-            add_in(&mut document, entity, Handle::NULL, &drawing, &names, &mut losses)?;
+            add_in(&mut document, entity, Handle::NULL, &names, &mut losses)?;
         }
         if !drawing.paper_layouts.is_empty() {
             losses.note("paper layouts");
@@ -247,68 +197,14 @@ impl Format for Ifcx {
             drawing,
             losses: Losses::default(),
             layers: HashMap::new(),
+            line_patterns: HashMap::new(),
             styles: HashMap::new(),
+            style_handles: HashMap::new(),
+            symbols: HashMap::new(),
             blocks: HashMap::new(),
         };
 
-        for layer in document.layers.iter() {
-            if !is_continuous(&layer.line_type) {
-                writer.losses.note(format!("the linetype of layer {}", layer.name));
-            }
-            let id = writer.drawing.id_counters.allocate_layer_id()?;
-            writer.layers.insert(layer.name.to_ascii_lowercase(), id);
-            writer.drawing.layers.push(IfccadLayer {
-                id,
-                name: layer.name.clone(),
-                description: None,
-                visible: !layer.is_off(),
-                frozen: layer.is_frozen(),
-                locked: layer.is_locked(),
-                plottable: layer.is_plottable,
-                frozen_in_new_viewports: false,
-                appearance: IfccadLayerAppearance {
-                    color: color_out(layer.color).unwrap_or(IfccadColor::Foreground),
-                    opacity: 1.0,
-                    line_pattern: IfccadLinePatternId(0),
-                    line_weight: weight_out(layer.line_weight).unwrap_or(0.25),
-                },
-            });
-        }
-
-        for style in document.text_styles.iter() {
-            // Shape files back complex linetypes; they are not text styles.
-            if style.is_shape_file || style.name.is_empty() {
-                continue;
-            }
-            let optional = |name: &String| (!name.is_empty()).then(|| name.clone());
-            let mut font = FontRequest {
-                family: optional(&style.true_type_font),
-                cad_font_name: optional(&style.font_file),
-                big_font_name: optional(&style.big_font_file),
-                ..Default::default()
-            };
-            if font.cad_font_name.is_none() && (font.family.is_none() || font.big_font_name.is_some())
-            {
-                font.cad_font_name = Some("txt".to_string());
-            }
-            let mut properties = TextStyleProperties::new(font);
-            if style.width_factor > 0.0 {
-                properties.width_factor = style.width_factor;
-            }
-            properties.oblique_angle = style.oblique_angle;
-            properties.vertical = style.is_vertical;
-            properties.creation_height = (style.height > 0.0).then_some(style.height);
-            properties.last_used_height = (style.last_height >= 0.0).then_some(style.last_height);
-            properties.creation_backward = style.flags.backward;
-            properties.creation_upside_down = style.flags.upside_down;
-            let id = writer.drawing.id_counters.allocate_text_style_id()?;
-            writer.styles.insert(style.name.to_ascii_lowercase(), id);
-            writer.drawing.text_styles.push(IfccadTextStyle {
-                id,
-                name: style.name.clone(),
-                properties,
-            });
-        }
+        tables::write(&mut writer)?;
 
         for entity in document.model_space_entities() {
             if let Some(entity) = writer.entity(entity)? {
@@ -341,7 +237,10 @@ impl Format for Ifcx {
 #[derive(Default)]
 struct Names {
     layers: HashMap<u64, String>,
+    line_patterns: HashMap<IfccadLinePatternId, String>,
     styles: HashMap<IfccadTextStyleId, String>,
+    style_handles: HashMap<IfccadTextStyleId, Handle>,
+    symbols: HashMap<IfccadSymbolSourceId, Handle>,
     blocks: HashMap<u64, String>,
 }
 
@@ -349,7 +248,6 @@ fn add_in(
     document: &mut Document,
     entity: &IfccadEntity,
     owner: Handle,
-    drawing: &IfccadDocument,
     names: &Names,
     losses: &mut Losses,
 ) -> Result<(), Error> {
@@ -368,7 +266,7 @@ fn add_in(
         .get(&entity.layer_id)
         .cloned()
         .unwrap_or_else(|| "0".to_string());
-    appearance_in(&entity.appearance, drawing, common, losses);
+    appearance_in(&entity.appearance, names, common, losses);
     common.invisible = !entity.visible;
     common.linetype_scale = entity.line_pattern_scale;
     document.add_entity(converted)?;
@@ -380,7 +278,12 @@ struct Writer<'a> {
     drawing: IfccadDocument,
     losses: Losses,
     layers: HashMap<String, u64>,
+    /// Line pattern ids by lower-case linetype name.
+    line_patterns: HashMap<String, IfccadLinePatternId>,
     styles: HashMap<String, IfccadTextStyleId>,
+    style_handles: HashMap<Handle, IfccadTextStyleId>,
+    /// Symbol sources by the handle of their shape-file style.
+    symbols: HashMap<Handle, IfccadSymbolSourceId>,
     /// Block ids by lower-case name; `None` for blocks IFCX cannot hold.
     blocks: HashMap<String, Option<u64>>,
 }
@@ -400,7 +303,7 @@ impl Writer<'_> {
             id: self.drawing.id_counters.allocate_entity_id()?,
             visible: !common.invisible,
             layer_id,
-            appearance: appearance_out(common, &mut self.losses),
+            appearance: appearance_out(common, &self.line_patterns, &mut self.losses),
             line_pattern_scale: common.linetype_scale,
             kind,
         })))
@@ -994,7 +897,11 @@ fn generation(continuous: bool) -> IfccadLinePatternGeneration {
     }
 }
 
-fn appearance_out(common: &EntityCommon, losses: &mut Losses) -> IfccadEntityAppearance {
+fn appearance_out(
+    common: &EntityCommon,
+    line_patterns: &HashMap<String, IfccadLinePatternId>,
+    losses: &mut Losses,
+) -> IfccadEntityAppearance {
     let color = match common.color {
         Color::ByLayer => IfccadMode::ByLayer,
         Color::ByBlock => IfccadMode::ByBlock,
@@ -1009,11 +916,13 @@ fn appearance_out(common: &EntityCommon, losses: &mut Losses) -> IfccadEntityApp
     let line_pattern = match common.linetype.to_ascii_lowercase().as_str() {
         "" | "bylayer" => IfccadMode::ByLayer,
         "byblock" => IfccadMode::ByBlock,
-        "continuous" => IfccadMode::Explicit(IfccadLinePatternId(0)),
-        _ => {
-            losses.note("an entity linetype");
-            IfccadMode::ByLayer
-        }
+        name => match line_patterns.get(name) {
+            Some(id) => IfccadMode::Explicit(*id),
+            None => {
+                losses.note("an entity linetype");
+                IfccadMode::ByLayer
+            }
+        },
     };
     let line_weight = match common.line_weight {
         LineWeight::ByBlock => IfccadMode::ByBlock,
@@ -1034,7 +943,7 @@ fn appearance_out(common: &EntityCommon, losses: &mut Losses) -> IfccadEntityApp
 
 fn appearance_in(
     appearance: &IfccadEntityAppearance,
-    drawing: &IfccadDocument,
+    names: &Names,
     common: &mut EntityCommon,
     losses: &mut Losses,
 ) {
@@ -1046,13 +955,13 @@ fn appearance_in(
     common.linetype = match appearance.line_pattern {
         IfccadMode::ByLayer => "ByLayer".to_string(),
         IfccadMode::ByBlock => "ByBlock".to_string(),
-        IfccadMode::Explicit(pattern) if pattern == continuous(drawing) => {
-            "Continuous".to_string()
-        }
-        IfccadMode::Explicit(_) => {
-            losses.note("an entity line pattern");
-            "ByLayer".to_string()
-        }
+        IfccadMode::Explicit(pattern) => match names.line_patterns.get(&pattern) {
+            Some(name) => name.clone(),
+            None => {
+                losses.note("an entity line pattern");
+                "ByLayer".to_string()
+            }
+        },
     };
     common.line_weight = match appearance.line_weight {
         IfccadMode::ByLayer => LineWeight::ByLayer,
@@ -1062,23 +971,12 @@ fn appearance_in(
     common.transparency = match appearance.opacity {
         IfccadMode::ByLayer => Transparency::ByLayer,
         IfccadMode::ByBlock => Transparency::ByBlock,
-        IfccadMode::Explicit(opacity) => {
-            Transparency::Explicit(((1.0 - opacity.clamp(0.0, 1.0)) * 255.0).round() as u8)
-        }
+        IfccadMode::Explicit(opacity) => transparency_in(opacity),
     };
 }
 
-/// The id of the drawing's continuous (solid) line pattern.
-fn continuous(drawing: &IfccadDocument) -> IfccadLinePatternId {
-    drawing
-        .line_patterns
-        .iter()
-        .find(|pattern| pattern.pattern.is_empty())
-        .map_or(IfccadLinePatternId(0), |pattern| pattern.id)
-}
-
-fn is_continuous(linetype: &str) -> bool {
-    linetype.is_empty() || linetype.eq_ignore_ascii_case("continuous")
+fn transparency_in(opacity: f64) -> Transparency {
+    Transparency::Explicit(((1.0 - opacity.clamp(0.0, 1.0)) * 255.0).round() as u8)
 }
 
 fn unit_code(name: &str) -> i16 {
