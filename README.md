@@ -18,11 +18,14 @@ With the `ifcx` feature, the `Ifcx` format reads and writes IFCX through
 [ifccad](https://github.com/OpenAEC-Foundation/ifccad):
 - ifccad only reads and writes the files; the mapping to `Document` lives here,
   so neither library depends on the other.
-- Layers, text styles, block definitions and model-space lines, circles, arcs,
-  ellipses, points, 2D and 3D polylines, 2D solids, traces, single-line texts
-  and block inserts map both ways. Everything else (MText, dimensions,
-  hatches, paper layouts, attributes, non-continuous linetypes) is reported as
-  a loss.
+- Everything IFCX defines maps both ways: layers, line patterns with their
+  SHX and text symbols, text styles, dimension styles, UCSs, the point
+  display, block definitions, paper layouts with their sheet and plot
+  settings, viewports, model windows and the workspace state, and lines,
+  circles, arcs, ellipses, points, 2D and 3D polylines, solids, traces,
+  texts, MText, hatches, linear and aligned dimensions and block inserts.
+- What IFCX has no place for is reported as a loss: other dimension kinds,
+  splines, 3D solids and the like, raster sheets, attributes.
 - An IFCX file's identity (header id, drawing id) rides on custom document
   properties, so a drawing read from IFCX is written back as the same drawing.
 

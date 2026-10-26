@@ -2,10 +2,10 @@
 //! mapping between its drawing model and a [`Document`] lives here, so the two
 //! libraries never depend on each other.
 //!
-//! Layers, line patterns (with their SHX and text symbols), text styles, UCSs,
-//! the point display, block definitions and the model-space lines, circles,
-//! arcs, ellipses, points, polylines, 2D solids, traces, single-line texts and
-//! block inserts map both ways. Everything else is reported as a [`Loss`].
+//! Everything IFCX defines maps both ways: the drawing tables, block
+//! definitions, paper layouts with their viewports and plot settings, the
+//! workspace state, and every IFCX entity kind. What IFCX has no place for is
+//! reported as a [`Loss`].
 
 use std::collections::{BTreeMap, HashMap};
 use std::f64::consts::TAU;
@@ -31,6 +31,7 @@ use ifccad::{
 
 use crate::{snap, Document, Error, Format, Loss, Placement};
 
+mod dimension;
 mod hatch;
 mod layout;
 mod tables;
@@ -176,6 +177,7 @@ impl Format for Ifcx {
             document.add_entity(EntityType::Block(start))?;
             document.add_entity(EntityType::BlockEnd(end))?;
         }
+        dimension::read_styles(&drawing, &mut document, &mut names, &mut losses)?;
         let papers = layout::read(&drawing, &mut document, &mut losses)?;
         let mut sheets: Vec<&IfccadPaperLayout> = drawing.paper_layouts.iter().collect();
         sheets.sort_by_key(|paper| paper.tab_index);
@@ -215,6 +217,7 @@ impl Format for Ifcx {
             }
         }
         layout::finish(&drawing, &mut document, &names, &papers, &handles)?;
+        dimension::associations_in(&drawing, &mut document, &handles);
         Ok((document, losses.into_vec()))
     }
 
@@ -254,9 +257,12 @@ impl Format for Ifcx {
             viewport_clips: HashMap::new(),
             layout_ids: HashMap::new(),
             ucs_ids: HashMap::new(),
+            dim_styles: HashMap::new(),
+            dimension_sources: HashMap::new(),
         };
 
         tables::write(&mut writer)?;
+        dimension::write_styles(&mut writer)?;
 
         for entity in document.model_space_entities() {
             if let Some(entity) = writer.entity(entity)? {
@@ -279,6 +285,7 @@ impl Format for Ifcx {
         let papers = drawing.paper_layouts.iter_mut().map(|paper| &mut paper.entities);
         for entities in scopes.chain(papers).chain([&mut drawing.model.entities]) {
             link_hatches(entities, ids, sources);
+            dimension::link_associations(entities, ids, &writer.dimension_sources);
         }
 
         let encoded = encode_ifccad_document(&writer.drawing)?;
@@ -326,6 +333,15 @@ fn link_hatches(
 struct Names {
     layers: HashMap<u64, String>,
     layer_handles: HashMap<u64, Handle>,
+    /// Dimension styles: name, settings and per-kind overrides.
+    dim_styles: HashMap<
+        ifccad::IfccadDimensionStyleId,
+        (
+            String,
+            ifccad::IfccadDimensionSettings,
+            BTreeMap<ifccad::dimension::DimensionKind, ifccad::IfccadDimensionOverrides>,
+        ),
+    >,
     line_patterns: HashMap<IfccadLinePatternId, String>,
     styles: HashMap<IfccadTextStyleId, String>,
     style_handles: HashMap<IfccadTextStyleId, Handle>,
@@ -344,7 +360,11 @@ fn add_in(
         losses.note("an entity ifccad keeps only as opaque data");
         return Ok(None);
     };
-    let Some(mut converted) = entity_in(&entity.kind, names, losses) else {
+    let converted = match &entity.kind {
+        IfccadEntityKind::Dimension(source) => dimension::dimension_in(source, document, names),
+        kind => entity_in(kind, names, losses),
+    };
+    let Some(mut converted) = converted else {
         losses.note(kind_name(&entity.kind));
         return Ok(None);
     };
@@ -382,6 +402,17 @@ struct Writer<'a> {
     /// Paper layout ids by LAYOUT object handle.
     layout_ids: HashMap<Handle, u64>,
     ucs_ids: HashMap<String, IfccadUcsId>,
+    /// Dimension style ids and settings by lower-case name.
+    dim_styles: HashMap<String, (ifccad::IfccadDimensionStyleId, ifccad::IfccadDimensionSettings)>,
+    /// Point associations of each associated dimension, by its handle.
+    dimension_sources: HashMap<
+        Handle,
+        Vec<(
+            ifccad::dimension::DimensionRole,
+            Handle,
+            ifccad::dimension::DimensionPointSelector,
+        )>,
+    >,
 }
 
 impl Writer<'_> {
@@ -669,6 +700,7 @@ impl Writer<'_> {
             EntityType::MText(mtext) => return Ok(text::mtext_out(self, mtext)),
             EntityType::Hatch(hatch) => return Ok(hatch::hatch_out(hatch, &mut self.losses)),
             EntityType::Viewport(viewport) => return Ok(layout::viewport_out(self, viewport)),
+            EntityType::Dimension(dimension) => return Ok(dimension::dimension_out(self, dimension)),
             EntityType::Insert(insert) => {
                 if insert.is_array() {
                     return Ok(None);

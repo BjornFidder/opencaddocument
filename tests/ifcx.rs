@@ -68,6 +68,19 @@ fn geometry(document: &Document) -> Vec<String> {
                 "mtext {:?} {:?} {} {} {:?}",
                 m.value, m.insertion_point, m.height, m.rectangle_width, m.attachment_point
             ),
+            EntityType::Dimension(d) => {
+                let b = d.base();
+                format!(
+                    "dimension {:?} {} {:?} {:?} {} {:?} {:?}",
+                    b.dimension_type,
+                    b.style_name,
+                    b.definition_point,
+                    b.text_override(),
+                    b.actual_measurement,
+                    b.text_user_positioned.then_some(b.text_middle_point),
+                    b.common.extended_data.get_record("ACAD").map(|r| r.values.clone())
+                )
+            }
             EntityType::Insert(i) => format!(
                 "insert {} {:?} {} {} {} {}",
                 i.block_name,
@@ -562,6 +575,72 @@ fn a_sheet_with_viewports_round_trips() {
     assert_eq!(viewport.frozen_layers, vec![read.layers.get("Hidden").unwrap().handle]);
     assert!(matches!(read.get_entity(viewport.clip_boundary_handle), Some(EntityType::LwPolyline(_))));
     assert_eq!((viewport.view_height, viewport.width), (1300.0, 180.0));
+    let (second, _) = Ifcx.write(&read).unwrap();
+    assert_eq!(without_timestamp(&second), without_timestamp(&first));
+}
+
+#[test]
+fn a_dimension_with_its_own_overrides_round_trips() {
+    use opencaddocument::entities::{Dimension, DimensionLinear};
+    use opencaddocument::tables::DimStyle;
+    use opencaddocument::xdata::{ExtendedDataRecord, XDataValue};
+    let mut document = Document::new();
+    let mut style = DimStyle::new("Arch");
+    style.handle = document.allocate_handle();
+    style.dimtxt = 2.5;
+    style.dimasz = 3.0;
+    style.dimdec = 1;
+    style.dimpost = "<> mm".to_string();
+    style.dimtad = 1;
+    document.dim_styles.add(style).unwrap();
+    let mut dimension = DimensionLinear::new(Vector3::new(0.0, 0.0, 0.0), Vector3::new(1200.0, 0.0, 0.0));
+    dimension.definition_point = Vector3::new(0.0, 400.0, 0.0);
+    dimension.rotation = 0.0;
+    let base = &mut dimension.base;
+    base.style_name = "Arch".to_string();
+    base.set_text_override(Some("<> TYP".to_string()));
+    base.text_user_positioned = true;
+    base.text_middle_point = Vector3::new(700.0, 450.0, 0.0);
+    base.flip_arrow1 = true;
+    let mut record = ExtendedDataRecord::new("ACAD");
+    for value in [
+        XDataValue::String("DSTYLE".to_string()),
+        XDataValue::ControlString("{".to_string()),
+        XDataValue::Integer16(271),
+        XDataValue::Integer16(3),
+        XDataValue::Integer16(176),
+        XDataValue::Integer16(1),
+        XDataValue::ControlString("}".to_string()),
+    ] {
+        record.add_value(value);
+    }
+    base.common.extended_data.upsert_record(record);
+    document.add_entity(EntityType::Dimension(Box::new(Dimension::Linear(dimension)))).unwrap();
+
+    let (first, losses) = Ifcx.write(&document).unwrap();
+    assert!(losses.is_empty(), "{losses:?}");
+    let (read, losses) = Ifcx.read(&first).unwrap();
+    assert!(losses.is_empty(), "{losses:?}");
+    assert_eq!(read.audit().error_count(), 0);
+    let style = read.dim_styles.get("Arch").unwrap();
+    assert_eq!((style.dimtxt, style.dimasz, style.dimdec, style.dimpost.as_str(), style.dimtad), (2.5, 3.0, 1, "<> mm", 1));
+    let dimension = read
+        .entities()
+        .find_map(|entity| match entity {
+            EntityType::Dimension(d) => Some(d.base().clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(dimension.style_name, "Arch");
+    assert_eq!(dimension.text_override(), Some("<> TYP"));
+    assert!(dimension.text_user_positioned && dimension.flip_arrow1);
+    assert_eq!(dimension.text_middle_point, Vector3::new(700.0, 450.0, 0.0));
+    assert_eq!(dimension.actual_measurement, 1200.0);
+    let overrides = dimension.common.extended_data.get_record("ACAD").unwrap().values.clone();
+    let has = |code: i16, value: i16| {
+        overrides.windows(2).any(|pair| pair == [XDataValue::Integer16(code), XDataValue::Integer16(value)])
+    };
+    assert!(has(271, 3) && has(176, 1), "{overrides:?}");
     let (second, _) = Ifcx.write(&read).unwrap();
     assert_eq!(without_timestamp(&second), without_timestamp(&first));
 }
