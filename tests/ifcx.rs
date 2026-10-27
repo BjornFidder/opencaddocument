@@ -274,7 +274,7 @@ fn ifccad_fixture_reads_and_keeps_its_identity() {
 }
 
 #[test]
-fn a_drawing_round_trips_and_is_byte_stable_after_the_first_save() {
+fn a_drawing_round_trips_with_semantic_stability() {
     let mut document = Document::new();
     document.header.insertion_units = 4;
     let add = |document: &mut Document, entity| {
@@ -421,7 +421,33 @@ fn a_drawing_round_trips_and_is_byte_stable_after_the_first_save() {
     let (second, _) = Ifcx.write(&read).unwrap();
     let (read_again, _) = Ifcx.read(&second).unwrap();
     let (third, _) = Ifcx.write(&read_again).unwrap();
-    assert_eq!(without_timestamp(&second), without_timestamp(&third));
+    let (read_third, losses) = Ifcx.read(&third).unwrap();
+    assert!(losses.is_empty(), "{losses:?}");
+    for drawing in [&read_again, &read_third] {
+        assert_eq!(
+            geometry(drawing)
+                .into_iter()
+                .map(rounded)
+                .collect::<Vec<_>>(),
+            geometry(&read).into_iter().map(rounded).collect::<Vec<_>>()
+        );
+        assert_eq!(blocks(drawing), blocks(&read));
+        assert_eq!(
+            drawing.header.insertion_units,
+            document.header.insertion_units
+        );
+    }
+    for bytes in [&first, &second, &third] {
+        let native = ifccad::load_ifccad_bytes(
+            bytes,
+            ifccad::IfccadReadOptions {
+                composition_policy: ifccad::IfccadCompositionPolicy::RejectConflicts,
+            },
+        )
+        .unwrap()
+        .into_document();
+        ifccad::validate_ifccad_document(&native).unwrap();
+    }
 }
 
 #[test]

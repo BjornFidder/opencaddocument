@@ -724,6 +724,7 @@ dependencies = [
  "acadrust",
  "ifccad",
  "serde",
+ "serde_json",
  "web-time",
 ]
 

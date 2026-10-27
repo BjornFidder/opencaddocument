@@ -119,10 +119,7 @@ const UNITS: [&str; 25] = [
     "usSurveyMile",
 ];
 
-/// Values that convert through trigonometry or a division are written
-/// snapped, so that reading a file and writing it again produces the same
-/// bytes (see [`Placement::snapped`]).
-const POSITION_STEP: f64 = 1e-8;
+/// Existing quantization when combining frame and entity angles.
 const ANGLE_STEP: f64 = 1e-12;
 
 /// `value` rounded to its 40 most significant bits.
@@ -1057,6 +1054,12 @@ fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Opt
             insert.set_x_scale(x);
             insert.set_y_scale(y);
             insert.set_z_scale(z);
+            if [insert.x_scale(), insert.y_scale(), insert.z_scale()].map(f64::to_bits)
+                != transform.scale.map(f64::to_bits)
+            {
+                losses.note("BlockInstance scale cannot be represented by CAD INSERT setters");
+                return None;
+            }
             EntityType::Insert(insert)
         }
         _ => return None,
@@ -1066,13 +1069,9 @@ fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Opt
 /// A frame with origin `origin` in the object coordinate system of `normal`,
 /// turned by `rotation` about it.
 fn placement_out(origin: Vector3, normal: Vector3, rotation: f64) -> IfccadPlacement {
-    let placement = Placement::from_ocs(origin, normal, rotation);
-    // A plan-view frame converts exactly; leave it untouched.
-    let placement = match normal == Vector3::new(0.0, 0.0, 1.0) && rotation == 0.0 {
-        true => placement,
-        false => placement.snapped(POSITION_STEP, ANGLE_STEP),
-    };
-    let (origin, x, y) = placement.to_axes();
+    // Quantizing the OCS normal can cross an arbitrary-axis branch while
+    // retaining the old OCS origin/angle, producing a different world frame.
+    let (origin, x, y) = Placement::from_ocs(origin, normal, rotation).to_axes();
     IfccadPlacement {
         origin: array(origin),
         x_axis: array(x),
