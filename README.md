@@ -37,3 +37,35 @@ With the `ifcx` feature, the `Ifcx` format reads and writes IFCX through
 DWG and DXF reading and writing come from
 [acadrust](https://github.com/HakanSeven12/acadrust), a fork of the
 upstream acadrust crate.
+
+## Logical IFCCAD conversion
+
+With `ifcx` enabled, `Ifcx::import_ifccad` and `Ifcx::export_ifccad` convert
+directly between `ifccad::IfccadDocument` and `Document`. They share the file
+adapter's mapping, rounding and loss reporting; no JSON serialization/parsing
+is needed between the models. Import validates its input and export validates
+its result. The `ifccad` dependency is re-exported so callers can use the exact
+same model types without a separate dependency revision.
+
+```rust
+use opencaddocument::{ifccad, Document, Ifcx};
+
+let source = Document::new();
+let exported = Ifcx.export_ifccad(&source).unwrap();
+let imported = Ifcx.import_ifccad(&exported.drawing).unwrap();
+// Inspect exported.losses and imported.losses for unsupported content.
+
+// Serialize only when bytes are needed for a file, download or preview.
+let encoded = ifccad::encode_ifccad_document(&exported.drawing).unwrap();
+```
+
+The outcomes include `entity_ids` (source CAD handle to exported IFCCAD ID)
+and `entity_handles` (source IFCCAD ID to imported CAD handle). These cover
+converted entity definitions in Model, Paper and shared blocks. Omitted
+entities and generated dimension-picture primitives have no separate entry.
+The maps describe one conversion, not stable identities across edits or an
+expanded list of block occurrences. The typed route converts the logical
+drawing only; it does not preserve or audit an enclosing IFCX source graph.
+
+`Format::read` and `Format::write` remain the IFCX byte-level entry points and
+delegate to these same conversion methods.

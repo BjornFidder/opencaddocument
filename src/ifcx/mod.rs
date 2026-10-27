@@ -140,7 +140,39 @@ fn settle(value: f64) -> f64 {
     f64::from_bits((value.to_bits() + half) & !((1u64 << DROPPED) - 1))
 }
 
+/// IFCX file IO and conversion between [`IfccadDocument`] and [`Document`].
 pub struct Ifcx;
+
+/// The result of importing a logical IFCCAD drawing into the shared CAD model.
+#[derive(Debug)]
+pub struct IfccadImportOutcome {
+    /// The converted CAD drawing.
+    pub document: Document,
+    /// Content the mapping could not carry over, as in [`Format::read`].
+    pub losses: Vec<Loss>,
+    /// Source IFCCAD entity IDs mapped to handles in `document`.
+    ///
+    /// Includes converted entities in Model, Paper and block definitions.
+    /// Omitted entities have no entry. Generated CAD helpers (such as dimension
+    /// picture primitives) have no separate IFCCAD entity ID and are not mapped.
+    /// A block member is mapped once, not once per insert occurrence.
+    pub entity_handles: BTreeMap<u64, Handle>,
+}
+
+/// The result of exporting the shared CAD model to a logical IFCCAD drawing.
+#[derive(Debug)]
+pub struct IfccadExportOutcome {
+    /// The converted drawing, validated by ifccad.
+    pub drawing: IfccadDocument,
+    /// Content the mapping could not carry over, as in [`Format::write`].
+    pub losses: Vec<Loss>,
+    /// Source CAD handles mapped to entity IDs in `drawing`.
+    ///
+    /// Includes converted entities in Model, Paper and block definitions.
+    /// Omitted entities and CAD helpers encoded as dimension-picture parts have
+    /// no entry. A block member is mapped once, not per insert occurrence.
+    pub entity_ids: BTreeMap<Handle, u64>,
+}
 
 impl Format for Ifcx {
     fn name(&self) -> &str {
@@ -153,6 +185,30 @@ impl Format for Ifcx {
 
     fn read(&self, bytes: &[u8]) -> Result<(Document, Vec<Loss>), Error> {
         let drawing = load_ifccad_bytes(bytes, Default::default())?.into_document();
+        let outcome = self.import_ifccad(&drawing)?;
+        Ok((outcome.document, outcome.losses))
+    }
+
+    fn write(&self, document: &Document) -> Result<(Vec<u8>, Vec<Loss>), Error> {
+        let outcome = self.export_ifccad(document)?;
+        let encoded = encode_ifccad_document(&outcome.drawing)?;
+        Ok((encoded.bytes().to_vec(), outcome.losses))
+    }
+}
+
+impl Ifcx {
+    /// Convert a logical IFCCAD drawing into a [`Document`] without a JSON bridge.
+    ///
+    /// Validates `drawing` before mapping it. Uses the same mapping, rounding and
+    /// loss reporting as [`Format::read`]; this is not a lossless conversion.
+    /// Only the supplied logical drawing is converted, not any enclosing IFCX
+    /// source graph. Entity associations refer to this conversion's output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if IFCCAD validation or CAD document construction fails.
+    pub fn import_ifccad(&self, drawing: &IfccadDocument) -> Result<IfccadImportOutcome, Error> {
+        ifccad::validate_ifccad_document(drawing)?;
         let mut losses = Losses::default();
         let mut document = Document::new();
         document.header.insertion_units = unit_code(&drawing.length_unit);
@@ -177,7 +233,7 @@ impl Format for Ifcx {
         }
 
         let mut names = Names::default();
-        tables::read(&drawing, &mut document, &mut names, &mut losses)?;
+        tables::read(drawing, &mut document, &mut names, &mut losses)?;
 
         // Every definition exists before any member is converted, so inserts
         // of blocks defined later in the file resolve.
@@ -213,8 +269,8 @@ impl Format for Ifcx {
             document.add_entity(EntityType::Block(start))?;
             document.add_entity(EntityType::BlockEnd(end))?;
         }
-        dimension::read_styles(&drawing, &mut document, &mut names, &mut losses)?;
-        let papers = layout::read(&drawing, &mut document, &mut losses)?;
+        dimension::read_styles(drawing, &mut document, &mut names, &mut losses)?;
+        let papers = layout::read(drawing, &mut document, &mut losses)?;
         let mut sheets: Vec<&IfccadPaperLayout> = drawing.paper_layouts.iter().collect();
         sheets.sort_by_key(|paper| paper.tab_index);
         let sheets = papers
@@ -226,7 +282,7 @@ impl Format for Ifcx {
         for (owner, entities) in members.into_iter().chain(sheets).chain([model]) {
             for entity in entities {
                 if let Some(handle) =
-                    add_in(&mut document, entity, owner, &drawing, &names, &mut losses)?
+                    add_in(&mut document, entity, owner, drawing, &names, &mut losses)?
                 {
                     handles.insert(entity.id(), handle);
                 }
@@ -262,12 +318,39 @@ impl Format for Ifcx {
                     .collect();
             }
         }
-        layout::finish(&drawing, &mut document, &names, &papers, &handles)?;
-        dimension::associations_in(&drawing, &mut document, &handles);
-        Ok((document, losses.into_vec()))
+        layout::finish(drawing, &mut document, &names, &papers, &handles)?;
+        dimension::associations_in(drawing, &mut document, &handles);
+        Ok(IfccadImportOutcome {
+            document,
+            losses: losses.into_vec(),
+            entity_handles: handles.into_iter().collect(),
+        })
     }
 
-    fn write(&self, document: &Document) -> Result<(Vec<u8>, Vec<Loss>), Error> {
+    /// Convert a [`Document`] into a validated logical IFCCAD drawing.
+    ///
+    /// Uses the same mapping, rounding and loss reporting as [`Format::write`],
+    /// without encoding and reparsing the result. Entity associations refer to
+    /// this conversion's output; IDs are not promised stable across conversions.
+    /// Encode the result with [`ifccad::encode_ifccad_document`] when IFCX JSON
+    /// bytes are needed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use opencaddocument::{Document, Ifcx};
+    ///
+    /// let exported = Ifcx.export_ifccad(&Document::new())?;
+    /// let imported = Ifcx.import_ifccad(&exported.drawing)?;
+    /// assert!(exported.losses.is_empty());
+    /// assert!(imported.losses.is_empty());
+    /// # Ok::<(), opencaddocument::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if conversion or validation of the resulting drawing fails.
+    pub fn export_ifccad(&self, document: &Document) -> Result<IfccadExportOutcome, Error> {
         let mut drawing =
             load_ifccad_bytes(TEMPLATE.as_bytes(), Default::default())?.into_document();
         let info = &document.summary_info;
@@ -337,8 +420,12 @@ impl Format for Ifcx {
             dimension::link_associations(entities, ids, &writer.dimension_sources);
         }
 
-        let encoded = encode_ifccad_document(&writer.drawing)?;
-        Ok((encoded.bytes().to_vec(), writer.losses.into_vec()))
+        ifccad::validate_ifccad_document(&writer.drawing)?;
+        Ok(IfccadExportOutcome {
+            drawing: writer.drawing,
+            losses: writer.losses.into_vec(),
+            entity_ids: writer.entity_ids.into_iter().collect(),
+        })
     }
 }
 
