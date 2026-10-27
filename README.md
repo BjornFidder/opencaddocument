@@ -11,8 +11,10 @@ representation and converts at the edge. `Placement` is the first example:
 - It stores the DWG form (OCS origin, normal, rotation), so DWG values pass
   through unchanged.
 - Other forms, such as an origin with X and Y axes, are converted.
-- A converter writing a non-native format writes the snapped placement. After
-  the first save, saving again produces the same bytes.
+- The IFCX converter writes the directly calculated frame. Explicit
+  `Placement::snapped` quantizes OCS parameters and can change world geometry
+  substantially near an arbitrary-axis boundary. Repeated conversion does not
+  promise byte-identical output; see [placement numerics](docs/ifcx-numerics.md).
 
 With the `ifcx` feature, the `Ifcx` format reads and writes IFCX through
 [ifccad](https://github.com/OpenAEC-Foundation/ifccad):

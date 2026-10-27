@@ -48,14 +48,10 @@ impl Placement {
     /// of `position` and the normal's direction and the rotation to multiples
     /// of `angle` radians.
     ///
-    /// A converter writing a format that does not store this form writes
-    /// `snapped(..)` converted, not the placement itself. A conversion and its
-    /// inverse agree only to a few ulps, so otherwise every save would change
-    /// the file's last digits. Read back, a snapped placement lies a few ulps
-    /// from the grid and rounds to the same point again, so after the first
-    /// save the file stays the same. Rounding the converted values instead
-    /// does not work: rounded axes are no longer unit length or
-    /// perpendicular, and reading them back corrects that by about one step.
+    /// This is an explicit parameter quantizer, not a world-space error bound.
+    /// Rounding the normal can cross an arbitrary-axis branch, changing the
+    /// interpretation of the unchanged OCS origin and rotation by a large
+    /// amount. The default IFCX converter therefore does not call it.
     pub fn snapped(&self, position: f64, angle: f64) -> Self {
         let n = self.normal.normalize();
         let elevation = snap(n.z.atan2(n.x.hypot(n.y)), angle);
@@ -134,9 +130,8 @@ mod tests {
         }
     }
 
-    /// Axes are not the stored form, so a round trip through them drifts by a
-    /// few ulps every time and never settles. Writing the snapped placement
-    /// stops that: after the first save, saving again writes the same values.
+    /// Explicitly requested parameter quantization can stabilize these samples.
+    /// This does not establish a bound on their world-space geometry changes.
     #[test]
     fn snapped_axes_are_stable_after_the_first_save() {
         let write = |p: Placement| p.snapped(1e-6, 1e-12).to_axes();

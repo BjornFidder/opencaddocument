@@ -37,6 +37,13 @@ still be conservatively refused. These checks do not certify text glyph contours
 or every later block occurrence transform. Tilted dimension planes and nondefault
 picture clone transforms remain outside the profile in both directions.
 
+A +Z dimension may itself live inside an obliquely placed ordinary block. The
+ordinary occurrence transform applies to the definition and its attached picture
+together; this does not require a tilted dimension plane. The placement regression
+suite covers that distinction through actual DWG and both DXF transports. INSERT
+scales replaced by the CAD setters are diagnosed rather than silently changed;
+see [placement numerics](ifcx-numerics.md).
+
 | Part family | Coverage within that profile |
 | --- | --- |
 | Line, display Point | Bounded coordinates and representable appearance |
