@@ -422,7 +422,7 @@ fn source_helpers_and_explicit_layer_zero_are_never_silently_changed() {
 }
 
 #[test]
-fn bounded_rounding_and_rotated_dimension_frames_keep_owner_geometry() {
+fn translated_and_rotated_dimension_frames_keep_owner_geometry() {
     for tilted in [false, true] {
         let mut drawing = source();
         let d = dimension_mut(&mut drawing);
@@ -571,7 +571,7 @@ fn rotated_mtext_picture_keeps_direction_anchor_and_native_dimension() {
 }
 
 #[test]
-fn excessive_translation_rounding_and_visual_common_state_still_drop_atomically() {
+fn finite_translation_rounding_keeps_the_picture() {
     let mut drawing = source();
     dimension_mut(&mut drawing).placement.origin = [1e16, 0., 0.];
     dimension_mut(&mut drawing).graphics = Some(graphics(vec![part(
@@ -581,11 +581,17 @@ fn excessive_translation_rounding_and_visual_common_state_still_drop_atomically(
         },
     )]));
     let (document, losses) = read(&drawing);
-    assert!(picture(&document).is_empty(), "{losses:?}");
+    assert!(!picture(&document).is_empty(), "{losses:?}");
     assert!(
-        losses.iter().any(|l| l.message.contains("budget")),
+        losses
+            .iter()
+            .any(|l| l.message.contains("retained with numerical rounding")),
         "{losses:?}"
     );
+}
+
+#[test]
+fn unsupported_visual_common_state_still_drops_atomically() {
     let (mut document, _) = read(&source());
     let mut member = line();
     member.common_mut().shadow_flags = 1;

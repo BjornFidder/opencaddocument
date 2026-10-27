@@ -5,7 +5,7 @@
 //! The mapping covers the drawing tables, block
 //! definitions, paper layouts with their viewports and plot settings, the
 //! workspace state, and every IFCX entity kind. Stored dimension graphics use
-//! native CAD picture blocks within a qualified exact planar profile. Pictures
+//! native CAD picture blocks within a supported planar profile. Pictures
 //! outside that profile and semantics IFCX cannot hold are reported as losses.
 
 use std::collections::{BTreeMap, HashMap};
@@ -30,7 +30,7 @@ use ifccad::{
     IfccadSymbolSourceId, IfccadText, IfccadTextStyleId, IfccadUcsId, IfccadUcsSelection,
 };
 
-use crate::{snap, Document, Error, Format, Loss, Placement};
+use crate::{Document, Error, Format, Loss, Placement};
 
 mod dimension;
 mod dimension_graphics;
@@ -119,24 +119,6 @@ const UNITS: [&str; 25] = [
     "usSurveyMile",
 ];
 
-/// Existing quantization when combining frame and entity angles.
-const ANGLE_STEP: f64 = 1e-12;
-
-/// `value` rounded to its 40 most significant bits.
-///
-/// Lengths that convert through a division or a square root are written
-/// settled: reading them back gives a value a few ulps off, and settling
-/// that rounds to the same bits again, so after the first save the file stays
-/// the same. The rounding is about one part in 10^12.
-fn settle(value: f64) -> f64 {
-    const DROPPED: u32 = 12;
-    if !value.is_finite() || value == 0.0 {
-        return value + 0.0;
-    }
-    let half = 1u64 << (DROPPED - 1);
-    f64::from_bits((value.to_bits() + half) & !((1u64 << DROPPED) - 1))
-}
-
 /// IFCX file IO and conversion between [`IfccadDocument`] and [`Document`].
 pub struct Ifcx;
 
@@ -145,7 +127,7 @@ pub struct Ifcx;
 pub struct IfccadImportOutcome {
     /// The converted CAD drawing.
     pub document: Document,
-    /// Content the mapping could not carry over, as in [`Format::read`].
+    /// Conversion diagnostics, including content loss and retained-picture numerical observations.
     pub losses: Vec<Loss>,
     /// Source IFCCAD entity IDs mapped to handles in `document`.
     ///
@@ -161,7 +143,7 @@ pub struct IfccadImportOutcome {
 pub struct IfccadExportOutcome {
     /// The converted drawing, validated by ifccad.
     pub drawing: IfccadDocument,
-    /// Content the mapping could not carry over, as in [`Format::write`].
+    /// Conversion diagnostics, including content loss and retained-picture numerical observations.
     pub losses: Vec<Loss>,
     /// Source CAD handles mapped to entity IDs in `drawing`.
     ///
@@ -683,8 +665,8 @@ impl Writer<'_> {
             },
             EntityType::Ellipse(ellipse) => {
                 let axis = to_ocs(ellipse.major_axis, ellipse.normal);
-                let major = settle(axis.x.hypot(axis.y));
-                let minor = settle(major * ellipse.minor_axis_ratio);
+                let major = axis.x.hypot(axis.y);
+                let minor = major * ellipse.minor_axis_ratio;
                 if !(major > 0.0 && minor > 0.0 && minor <= major) {
                     return Ok(None);
                 }
@@ -804,7 +786,7 @@ impl Writer<'_> {
                 let (origin, rotation, frame, layout) = match text.horizontal_alignment {
                     H::Aligned | H::Fit => {
                         let (dx, dy) = (alignment.x - start.x, alignment.y - start.y);
-                        let length = settle(dx.hypot(dy));
+                        let length = dx.hypot(dy);
                         if length <= 0.0 {
                             return Ok(None);
                         }
@@ -896,17 +878,49 @@ impl Writer<'_> {
     }
 }
 
-/// What a conversion leaves behind, counted per kind.
+/// Content omissions and separately staged retained-picture observations.
 #[derive(Default)]
-struct Losses(BTreeMap<String, usize>);
+struct Losses {
+    content: BTreeMap<String, usize>,
+    retained: Vec<Loss>,
+}
 
 impl Losses {
     fn note(&mut self, what: impl Into<String>) {
-        *self.0.entry(what.into()).or_default() += 1;
+        *self.content.entry(what.into()).or_default() += 1;
+    }
+
+    fn has_content_loss(&self) -> bool {
+        !self.content.is_empty()
+    }
+    fn content_snapshot(&self) -> BTreeMap<String, usize> {
+        self.content.clone()
+    }
+    fn retained_note(&mut self, note: Loss) {
+        self.retained.push(note);
+    }
+    fn merge(&mut self, other: Self) {
+        for (what, count) in other.content {
+            *self.content.entry(what).or_default() += count;
+        }
+        self.retained.extend(other.retained);
+    }
+    fn locate_new_content(&mut self, before: &BTreeMap<String, usize>, prefix: &str) {
+        for (key, count) in self.content_snapshot() {
+            let previous = before.get(&key).copied().unwrap_or(0);
+            if count > previous {
+                if previous == 0 {
+                    self.content.remove(&key);
+                } else {
+                    self.content.insert(key.clone(), previous);
+                }
+                *self.content.entry(format!("{prefix}: {key}")).or_default() += count - previous;
+            }
+        }
     }
 
     fn into_vec(self) -> Vec<Loss> {
-        self.0
+        self.content
             .into_iter()
             .map(|(what, count)| Loss {
                 handle: None,
@@ -915,6 +929,7 @@ impl Losses {
                     n => format!("{what}: not converted ({n}×)"),
                 },
             })
+            .chain(self.retained)
             .collect()
     }
 }
@@ -1065,7 +1080,7 @@ fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Opt
             converted.insertion_point = origin;
             // A frame turned in its plane is a text rotation; written frames
             // are square to the OCS, so read them back exactly that way.
-            converted.rotation = text.rotation + snap(frame, ANGLE_STEP);
+            converted.rotation = text.rotation + frame;
             type H = TextHorizontalAlignment;
             type V = TextVerticalAlignment;
             match text.layout {
@@ -1136,7 +1151,7 @@ fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Opt
             let (origin, normal, frame) = placement_in(&transform.placement);
             let mut insert = Insert::new(name.clone(), origin);
             insert.normal = normal;
-            insert.rotation = transform.rotation + snap(frame, ANGLE_STEP);
+            insert.rotation = transform.rotation + frame;
             let [x, y, z] = transform.scale;
             insert.set_x_scale(x);
             insert.set_y_scale(y);
@@ -1411,20 +1426,31 @@ fn rfc3339(seconds: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{rfc3339, settle};
+    use super::{rfc3339, Losses};
 
     #[test]
-    fn settled_values_settle_again_after_a_few_ulps() {
-        for value in [0.1, -3.7, 1.0 / 3.0, 12_345.678_9, 6.02e23, -1e-9] {
-            let settled = settle(value);
-            assert!(((settled - value) / value).abs() < 1e-12);
-            let mut nearby = settled;
-            for _ in 0..8 {
-                assert_eq!(settle(nearby), settled);
-                nearby = nearby.next_up();
-            }
-            assert_eq!(settle(settled.next_down()), settled);
-        }
+    fn retained_notes_do_not_become_content_and_content_counts_add() {
+        let mut a = Losses::default();
+        a.note("same");
+        let mut b = Losses::default();
+        b.note("same");
+        b.retained_note(crate::Loss {
+            handle: None,
+            message: "retained".into(),
+        });
+        a.merge(b);
+        assert!(a.has_content_loss());
+        assert_eq!(a.content_snapshot()["same"], 2);
+        let reports = a.into_vec();
+        assert_eq!(reports[0].message, "same: not converted (2×)");
+        assert_eq!(reports[1].message, "retained");
+        let mut retained = Losses::default();
+        retained.retained_note(crate::Loss {
+            handle: None,
+            message: "retained".into(),
+        });
+        assert!(!retained.has_content_loss());
+        assert!(retained.content_snapshot().is_empty());
     }
 
     #[test]

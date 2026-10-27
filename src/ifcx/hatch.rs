@@ -111,7 +111,7 @@ pub(super) fn hatch_in(hatch: &IfccadHatch) -> EntityType {
     let (origin, normal, rotation) = placement_in(&hatch.placement);
     let frame = Frame2 {
         origin: [origin.x, origin.y],
-        rotation: snap(rotation, ANGLE_STEP),
+        rotation,
     };
     let mut converted = Hatch::new();
     converted.normal = normal;
@@ -419,10 +419,9 @@ fn signed(angle: f64, counter_clockwise: bool) -> f64 {
 
 /// The signed sweep of a stored arc; a full turn for coincident ends.
 fn sweep(start: f64, end: f64, counter_clockwise: bool) -> f64 {
-    let turn = snap((end - start).rem_euclid(TAU), ANGLE_STEP);
+    let turn = (end - start).rem_euclid(TAU);
     let turn = match turn {
         0.0 => TAU,
-        turn if turn >= TAU => TAU,
         turn => turn,
     };
     match counter_clockwise {
@@ -438,15 +437,15 @@ fn stored_angles(start_parameter: f64, sweep_parameter: f64) -> (f64, f64, bool)
     (start, start + sweep_parameter.abs(), counter_clockwise)
 }
 
-/// Unit major direction (as a snapped angle) and the two radii.
+/// Unit major direction and the two radii.
 fn ellipse_axes(arc: &EllipticArcEdge) -> Option<([f64; 2], f64, f64)> {
     let axis = arc.major_axis_endpoint;
-    let major = settle(axis.x.hypot(axis.y));
-    let minor = settle(major * arc.minor_axis_ratio);
+    let major = axis.x.hypot(axis.y);
+    let minor = major * arc.minor_axis_ratio;
     if !(major > 0.0 && minor > 0.0 && minor <= major) {
         return None;
     }
-    let angle = snap(axis.y.atan2(axis.x), ANGLE_STEP);
+    let angle = axis.y.atan2(axis.x);
     let x_axis = match angle {
         0.0 => [1.0, 0.0],
         angle => [angle.cos(), angle.sin()],
@@ -470,7 +469,7 @@ fn pattern_out(hatch: &Hatch) -> Option<HatchLinePattern> {
     };
     let mut families = Vec::new();
     for line in &hatch.pattern.lines {
-        let angle = snap(line.angle - rotation, ANGLE_STEP);
+        let angle = line.angle - rotation;
         let base = unturn(line.base_point);
         let offset = unturn(line.offset);
         let (d_sin, d_cos) = angle.sin_cos();
@@ -482,17 +481,17 @@ fn pattern_out(hatch: &Hatch) -> Option<HatchLinePattern> {
             .map(|length| match *length {
                 0.0 => HatchDash::Dot,
                 length if length > 0.0 => HatchDash::Dash {
-                    length: settle(length / scale),
+                    length: length / scale,
                 },
                 length => HatchDash::Gap {
-                    length: settle(-length / scale),
+                    length: -length / scale,
                 },
             })
             .collect();
         families.push(HatchLineFamily {
             angle,
-            base_point: [settle(base.0), settle(base.1)],
-            offset: [settle(along), settle(across)],
+            base_point: [base.0, base.1],
+            offset: [along, across],
             dashes,
         });
     }

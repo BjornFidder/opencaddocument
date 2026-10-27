@@ -21,6 +21,81 @@ use super::*;
 type Format = CharacterFormat<IfccadColor>;
 type Paragraph = MTextParagraph<IfccadColor>;
 
+pub(super) fn picture_mtext_content(value: &str) -> Option<Vec<Paragraph>> {
+    let (paragraphs, covered) = parse_mtext_checked(value);
+    covered.then_some(paragraphs)
+}
+
+/// Fold native inheritance directly. Do not prove native content by first
+/// emitting it: unsupported paragraph/font fields could disappear that way.
+pub(super) fn picture_native_content(value: &IfccadMText) -> Vec<Paragraph> {
+    value
+        .content
+        .iter()
+        .cloned()
+        .map(|mut p| {
+            let base = merge_format(&value.character_format, &p.character_format);
+            p.paragraph_format = merge_paragraph(&value.paragraph_format, &p.paragraph_format);
+            // Entity spacing is compared separately; local spacing is protected.
+            p.paragraph_format.line_spacing = None;
+            for inline in &mut p.inlines {
+                match inline {
+                    MTextInline::Run {
+                        character_format, ..
+                    } => *character_format = merge_format(&base, character_format),
+                    MTextInline::Stack(s) => {
+                        s.character_format = merge_format(&base, &s.character_format)
+                    }
+                    _ => {}
+                }
+            }
+            p.character_format = Format::default();
+            p
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod picture_parser_tests {
+    use super::*;
+    #[test]
+    fn checked_grammar_rejects_uncovered_codes_and_parameters() {
+        for value in [
+            r"\Zsecret;240",
+            r"\Hbad;240",
+            r"\fArial|z9;240",
+            r"\fArial|b7;240",
+            r"\pxzz9;240",
+            r"\C999;240",
+            r"\U+ZZZZ",
+            r"\Smissing;",
+            r"\Q90;240",
+            "{unclosed",
+            "trailing\\",
+        ] {
+            assert!(picture_mtext_content(value).is_none(), "{value}");
+            assert!(
+                !parse_mtext(value).is_empty(),
+                "ordinary parsing remains lenient"
+            );
+        }
+    }
+    #[test]
+    fn checked_grammar_preserves_literals_scopes_and_complete_formatting() {
+        for value in [
+            r"literal \\Zsecret;240",
+            r"\A1;240",
+            r"{\A1;240}",
+            r"{\C1;red {\Lunderlined}\l normal}\P\pxqc;centre",
+            r"\fArial|b1|i0|c0|p34;Text",
+            r"\S1/2;",
+            r"\U+00B0",
+        ] {
+            assert_eq!(picture_mtext_content(value).unwrap(), parse_mtext(value));
+        }
+    }
+}
+
 /// MTEXT line spacing is a factor of this many text heights.
 const LINE_PITCH: f64 = 5.0 / 3.0;
 
@@ -129,11 +204,15 @@ fn push_percent_safe(out: &mut String, text: &str, mut push: impl FnMut(&mut Str
 /// force where it stands; paragraph properties carry over to the next
 /// paragraph until changed.
 pub(super) fn parse_mtext(value: &str) -> Vec<Paragraph> {
+    parse_mtext_checked(value).0
+}
+fn parse_mtext_checked(value: &str) -> (Vec<Paragraph>, bool) {
     let s: Vec<char> = value.chars().collect();
     let mut paragraphs = vec![Paragraph::default()];
     let mut format = Format::default();
     let mut scopes: Vec<Format> = Vec::new();
     let mut i = 0;
+    let mut covered = true;
     while i < s.len() {
         let c = s[i];
         i += 1;
@@ -142,6 +221,8 @@ pub(super) fn parse_mtext(value: &str) -> Vec<Paragraph> {
             '}' => {
                 if let Some(outer) = scopes.pop() {
                     format = outer;
+                } else {
+                    covered = false;
                 }
             }
             '\\' if i < s.len() => {
@@ -162,25 +243,30 @@ pub(super) fn parse_mtext(value: &str) -> Vec<Paragraph> {
                             literal(&mut paragraphs, &format, value);
                             i = next;
                         }
-                        None => literal(&mut paragraphs, &format, 'U'),
+                        None => {
+                            covered = false;
+                            literal(&mut paragraphs, &format, 'U');
+                        }
                     },
                     'H' | 'W' | 'w' | 'T' | 'Q' | 'C' | 'c' | 'A' | 'f' | 'F' | 'p' | 'S' => {
                         let Some((body, next)) = code_body(&s, i) else {
+                            covered = false;
                             literal(&mut paragraphs, &format, '\\');
                             literal(&mut paragraphs, &format, code);
                             continue;
                         };
                         i = next;
-                        match code {
+                        covered &= match code {
                             'p' => parse_paragraph(
                                 &body,
                                 &mut current(&mut paragraphs).paragraph_format,
                             ),
                             'S' => stack(&body, &format, current(&mut paragraphs)),
                             _ => apply_code(code, &body, &mut format),
-                        }
+                        };
                     }
                     other => {
+                        covered = false;
                         literal(&mut paragraphs, &format, '\\');
                         literal(&mut paragraphs, &format, other);
                     }
@@ -218,11 +304,17 @@ pub(super) fn parse_mtext(value: &str) -> Vec<Paragraph> {
                 }
                 new_paragraph(&mut paragraphs);
             }
-            c if c.is_control() => {}
+            '\\' => {
+                covered = false;
+                literal(&mut paragraphs, &format, '\\');
+            }
+            c if c.is_control() => {
+                covered = false;
+            }
             c => literal(&mut paragraphs, &format, c),
         }
     }
-    paragraphs
+    (paragraphs, covered && scopes.is_empty())
 }
 
 fn current(paragraphs: &mut [Paragraph]) -> &mut Paragraph {
@@ -294,109 +386,134 @@ fn unicode(s: &[char], at: usize) -> Option<(char, usize)> {
     Some((char::from_u32(high)?, at + 4))
 }
 
-fn apply_code(code: char, body: &str, format: &mut Format) {
-    let number = |body: &str| body.parse::<f64>().ok().filter(|v| v.is_finite());
-    let scalar = |body: &str| -> Option<(f64, bool)> {
-        match body.strip_suffix('x') {
-            Some(factor) => number(factor).map(|v| (v, true)),
-            None => number(body).map(|v| (v, false)),
-        }
+fn apply_code(code: char, body: &str, format: &mut Format) -> bool {
+    let number = |s: &str| s.parse::<f64>().ok().filter(|v| v.is_finite());
+    let scalar = |s: &str| match s.strip_suffix('x') {
+        Some(s) => number(s).map(|v| (v, true)),
+        None => number(s).map(|v| (v, false)),
     };
     match code {
         'H' => {
-            if let Some((value, relative)) = scalar(body).filter(|(v, _)| *v > 0.0) {
-                format.height = Some(match (relative, format.height) {
-                    (false, _) => TextHeight::Absolute { distance: value },
-                    (true, Some(TextHeight::Absolute { distance })) => TextHeight::Absolute {
-                        distance: distance * value,
-                    },
-                    (true, Some(TextHeight::Relative { factor })) => TextHeight::Relative {
-                        factor: factor * value,
-                    },
-                    (true, None) => TextHeight::Relative { factor: value },
-                });
-            }
+            let Some((value, relative)) = scalar(body).filter(|(v, _)| *v > 0.) else {
+                return false;
+            };
+            format.height = Some(match (relative, format.height) {
+                (false, _) => TextHeight::Absolute { distance: value },
+                (true, Some(TextHeight::Absolute { distance })) => TextHeight::Absolute {
+                    distance: distance * value,
+                },
+                (true, Some(TextHeight::Relative { factor })) => TextHeight::Relative {
+                    factor: factor * value,
+                },
+                (true, None) => TextHeight::Relative { factor: value },
+            });
         }
         'W' | 'w' | 'T' => {
-            if let Some((value, relative)) = scalar(body).filter(|(v, _)| *v > 0.0) {
-                let field = match code {
-                    'T' => &mut format.tracking,
-                    _ => &mut format.width_factor,
-                };
-                *field = Some(match relative {
-                    true => field.unwrap_or(1.0) * value,
-                    false => value,
-                });
-            }
+            let Some((value, relative)) = scalar(body).filter(|(v, _)| *v > 0.) else {
+                return false;
+            };
+            let field = if code == 'T' {
+                &mut format.tracking
+            } else {
+                &mut format.width_factor
+            };
+            *field = Some(if relative {
+                field.unwrap_or(1.) * value
+            } else {
+                value
+            });
         }
         'Q' => {
-            if let Some(degrees) = number(body).filter(|v| v.abs() < 90.0) {
-                format.oblique_angle = Some(degrees.to_radians());
-            }
+            let Some(degrees) = number(body).filter(|v| v.abs() < 90.) else {
+                return false;
+            };
+            format.oblique_angle = Some(degrees.to_radians());
         }
         'C' => {
-            if let Ok(index) = body.parse::<u16>() {
-                format.color = match index {
-                    0 => Some(TextColor::ByBlock),
-                    256 => Some(TextColor::ByLayer),
-                    1..=255 => color_out(Color::Index(index as u8)).map(TextColor::Explicit),
-                    _ => return,
-                };
-            }
+            let Ok(index) = body.parse::<u16>() else {
+                return false;
+            };
+            format.color = match index {
+                0 => Some(TextColor::ByBlock),
+                256 => Some(TextColor::ByLayer),
+                1..=255 => color_out(Color::Index(index as u8)).map(TextColor::Explicit),
+                _ => return false,
+            };
         }
         'c' => {
-            if let Ok(value) = body.parse::<u32>().map(|v| v & 0xff_ffff) {
-                format.color = Some(TextColor::Explicit(IfccadColor::Concrete {
-                    rgb: [value as u8, (value >> 8) as u8, (value >> 16) as u8],
-                    indexed: None,
-                    named: None,
-                }));
-            }
+            let Ok(raw) = body.parse::<u32>() else {
+                return false;
+            };
+            let value = raw & 0xff_ffff;
+            format.color = Some(TextColor::Explicit(IfccadColor::Concrete {
+                rgb: [value as u8, (value >> 8) as u8, (value >> 16) as u8],
+                indexed: None,
+                named: None,
+            }));
+            return raw <= 0xff_ffff;
         }
         'A' => {
-            format.position = match body {
-                "0" => Some(TextPosition::Bottom),
-                "1" => Some(TextPosition::Center),
-                "2" => Some(TextPosition::Top),
-                _ => format.position,
-            };
+            format.position = Some(match body {
+                "0" => TextPosition::Bottom,
+                "1" => TextPosition::Center,
+                "2" => TextPosition::Top,
+                _ => return false,
+            });
         }
         'f' | 'F' => {
             let mut parts = body.split('|');
             let name = parts.next().unwrap_or("").to_string();
-            let mut font = match code {
-                'F' => FontRequest {
+            let mut font = if code == 'F' {
+                FontRequest {
                     cad_font_name: Some(name),
                     ..Default::default()
-                },
-                _ => FontRequest::family(name),
+                }
+            } else {
+                FontRequest::family(name)
             };
+            let mut covered = true;
             for part in parts {
-                let (flag, value) = part.split_at(part.len().min(1));
+                let (flag, value) = part.split_at(part.chars().next().map_or(0, char::len_utf8));
                 match flag {
-                    "b" => font.bold = Some(value == "1"),
-                    "i" => font.italic = Some(value == "1"),
-                    "c" => font.charset = value.parse().ok(),
-                    "p" => font.pitch = value.parse().ok(),
-                    _ => {}
+                    "b" => {
+                        covered &= matches!(value, "0" | "1");
+                        font.bold = Some(value == "1");
+                    }
+                    "i" => {
+                        covered &= matches!(value, "0" | "1");
+                        font.italic = Some(value == "1");
+                    }
+                    "c" => {
+                        font.charset = value.parse().ok();
+                        covered &= font.charset.is_some();
+                    }
+                    "p" => {
+                        font.pitch = value.parse().ok();
+                        covered &= font.pitch.is_some();
+                    }
+                    _ => covered = false,
                 }
             }
             if validate_font_request(&font).is_ok() {
                 format.font = Some(font);
+            } else {
+                covered = false;
             }
+            return covered;
         }
-        _ => {}
+        _ => return false,
     }
+    true
 }
 
 /// `\S` stacked text: upper and lower parts around `/`, `#` or `^`.
-fn stack(body: &str, format: &Format, paragraph: &mut Paragraph) {
+fn stack(body: &str, format: &Format, paragraph: &mut Paragraph) -> bool {
     let Some(index) = body.find(['/', '#', '^']) else {
-        return;
+        return false;
     };
     let (upper, lower) = (&body[..index], &body[index + 1..]);
     if upper.is_empty() && lower.is_empty() {
-        return;
+        return false;
     }
     paragraph.inlines.push(MTextInline::Stack(TextStack {
         stack_kind: match &body[index..index + 1] {
@@ -409,10 +526,12 @@ fn stack(body: &str, format: &Format, paragraph: &mut Paragraph) {
         character_format: format.clone(),
         ..Default::default()
     }));
+    true
 }
 
 /// `\p` paragraph properties: alignment, indents and tab stops.
-fn parse_paragraph(body: &str, out: &mut ParagraphFormat) {
+fn parse_paragraph(body: &str, out: &mut ParagraphFormat) -> bool {
+    let mut covered = true;
     let mut parsed = out.clone();
     let body = body.strip_prefix('x').unwrap_or(body);
     let bytes = body.as_bytes();
@@ -438,7 +557,10 @@ fn parse_paragraph(body: &str, out: &mut ParagraphFormat) {
                     Some(b'r') => Some(TextParagraphAlignment::Right),
                     Some(b'j' | b'*') => Some(TextParagraphAlignment::Justified),
                     Some(b'd') => Some(TextParagraphAlignment::Distributed),
-                    _ => parsed.alignment,
+                    _ => {
+                        covered = false;
+                        parsed.alignment
+                    }
                 };
                 i += 1;
             }
@@ -450,6 +572,8 @@ fn parse_paragraph(body: &str, out: &mut ParagraphFormat) {
                         b'l' => &mut parsed.left_indent_factor,
                         _ => &mut parsed.right_indent_factor,
                     } = Some(value);
+                } else {
+                    covered = false;
                 }
             }
             b't' => {
@@ -462,7 +586,10 @@ fn parse_paragraph(body: &str, out: &mut ParagraphFormat) {
                             b'r' | b'R' => (TextTabAlignment::Right, &part[1..]),
                             _ => (TextTabAlignment::Left, part),
                         };
-                        let position_factor = number.parse::<f64>().ok()?;
+                        let Ok(position_factor) = number.parse::<f64>() else {
+                            covered = false;
+                            return None;
+                        };
                         Some(TextTabStop {
                             position_factor,
                             alignment,
@@ -474,6 +601,7 @@ fn parse_paragraph(body: &str, out: &mut ParagraphFormat) {
             }
             // Spacing keys and anything unknown: skip the value.
             _ => {
+                covered = false;
                 while bytes.get(i).is_some_and(|c| *c != b',') {
                     i += 1;
                 }
@@ -482,7 +610,10 @@ fn parse_paragraph(body: &str, out: &mut ParagraphFormat) {
     }
     if validate_paragraph_format(&parsed).is_ok() {
         *out = parsed;
+    } else {
+        covered = false;
     }
+    covered
 }
 
 /// Paragraphs as MTEXT markup, formatting folded from `global` (the whole
@@ -636,9 +767,8 @@ fn format_codes(format: &Format) -> String {
         out.push_str(&format!("\\T{tracking};"));
     }
     if let Some(angle) = format.oblique_angle {
-        // Degrees and radians do not convert exactly; snapped, a read and
-        // a write give back the same value.
-        out.push_str(&format!("\\Q{};", snap(angle.to_degrees(), 1e-9)));
+        // Keep the round-trip decimal spelling of the required unit conversion.
+        out.push_str(&format!("\\Q{};", angle.to_degrees()));
     }
     for (value, on, off) in [
         (format.underline, "\\L", "\\l"),
@@ -859,7 +989,7 @@ pub(super) fn mtext_in(
         losses.note("MText mirroring");
     }
     let (origin, normal, frame) = placement_in(&mtext.placement);
-    let rotation = mtext.rotation + snap(frame, ANGLE_STEP);
+    let rotation = mtext.rotation + frame;
     let mut converted = MText::new();
     converted.style = style.clone();
     converted.height = mtext.height;
@@ -909,7 +1039,7 @@ fn spacing_out(mtext: &MText) -> Option<TextLineSpacing> {
     {
         return None;
     }
-    let distance = settle(mtext.line_spacing_factor * LINE_PITCH * mtext.height);
+    let distance = mtext.line_spacing_factor * LINE_PITCH * mtext.height;
     Some(match mtext.line_spacing_style {
         LineSpacingStyle::AtLeast => TextLineSpacing::AtLeast { distance },
         LineSpacingStyle::Exactly => TextLineSpacing::Exact { distance },

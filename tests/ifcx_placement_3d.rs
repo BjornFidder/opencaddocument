@@ -59,7 +59,7 @@ fn physically_equivalent_units_preserve_the_same_world_geometry_in_mm() {
                 unit,
             );
             let (bytes, losses) = Ifcx.write(&cad).unwrap();
-            assert!(losses.is_empty(), "{losses:?}");
+            assert_retained_or_empty(&losses);
             let native = strict_native(&bytes);
             assert_eq!(native.length_unit, unit);
             native_world(&native)
@@ -77,6 +77,15 @@ fn spatial_pictures_survive_three_real_dwg_and_dxf_cycles() {
             assert_three_cycles(&case, route, false);
             assert_three_cycles(&case, route, true);
         }
+    }
+}
+
+#[test]
+fn spatial_picture_and_equivalent_ordinary_geometry_match() {
+    for name in ["wide_aa", "wide_nested", "wide_mtext"] {
+        let case = spatial_case(name);
+        assert_three_cycles(&case, Transport::Direct, false);
+        assert_three_cycles(&case, Transport::Direct, true);
     }
 }
 

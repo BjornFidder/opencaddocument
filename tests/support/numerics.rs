@@ -5,6 +5,7 @@ use std::f64::consts::TAU;
 use std::io::Cursor;
 
 use ifccad::dimension::DimensionDefinition;
+use ifccad::text::*;
 use ifccad::*;
 use opencaddocument::entities::Dimension;
 use opencaddocument::{
@@ -144,12 +145,32 @@ impl Observation {
         );
         for (key, b) in &self.0 {
             let a = &expected.0[key];
+            if a.get("text").is_some() {
+                assert_eq!(a, b, "{context}: {key}");
+                continue;
+            }
             let error = descriptor_error(a, b) * mm;
             assert!(
                 error <= budget,
                 "{context}: {key}: {error:.12e} mm > {budget:.3e} mm\nexpected {a}\nactual {b}"
             );
         }
+    }
+    fn equivalent_picture(&self, mm: f64, budget: f64) {
+        let select = |prefix: &str| {
+            Self(
+                self.0
+                    .iter()
+                    .filter_map(|(k, v)| k.strip_prefix(prefix).map(|k| (k.into(), v.clone())))
+                    .collect(),
+            )
+        };
+        select("picture/").assert_matches(
+            &select("ordinary/"),
+            mm,
+            budget,
+            "picture versus equivalent ordinary geometry",
+        );
     }
     pub fn ordinary_in_mm(&self, mm: f64) -> Self {
         Self(
@@ -246,6 +267,9 @@ impl SpatialCase {
             self.budget(),
             &format!("{} {direction} {context}", self.name()),
         );
+        if self.data["wide_picture"] == true {
+            actual.equivalent_picture(self.mm(), self.budget());
+        }
     }
 }
 pub fn strict_native(bytes: &[u8]) -> IfccadDocument {
@@ -337,6 +361,7 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
     };
     *start = [0.; 3];
     *end = [4000. * f, 0., 0.];
+    let style_id = d.text_styles[0].id;
     let IfccadEntityKind::Dimension(dim) = &mut d.model.entities[1].as_native_mut().unwrap().kind
     else {
         panic!()
@@ -376,6 +401,102 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
     if case.data["picture"] == false {
         dim.graphics = None;
     }
+    if case.data["wide_picture"] == true {
+        let p = identity([2. * f, 4. * f, 0.]);
+        dim.graphics.as_mut().unwrap().parts.extend([
+            part(IfccadDimensionGraphicsKind::Arc {
+                placement: p.clone(),
+                radius: 2. * f,
+                start_parameter: 0.,
+                sweep_parameter: 1.,
+            }),
+            part(IfccadDimensionGraphicsKind::Ellipse {
+                placement: p.clone(),
+                semi_major_radius: 2. * f,
+                semi_minor_radius: f,
+            }),
+            part(IfccadDimensionGraphicsKind::PlanarPolyline {
+                placement: p.clone(),
+                vertices: vec![[0., 0.], [2. * f, f]],
+                bulges: vec![0.5, 0.],
+                closed: false,
+                line_pattern_generation: IfccadLinePatternGeneration::Continuous,
+                widths: IfccadPlanarPolylineWidths::Constant { width: 0.25 * f },
+            }),
+            part(IfccadDimensionGraphicsKind::SpatialPolyline {
+                vertices: vec![[0., 0., f], [2. * f, f, 2. * f]],
+                closed: false,
+                line_pattern_generation: IfccadLinePatternGeneration::Continuous,
+            }),
+            part(IfccadDimensionGraphicsKind::Solid(
+                IfccadFilledQuadrilateral {
+                    placement: p.clone(),
+                    corners: [[0., 0.], [2. * f, 0.], [0., f], [0., f]],
+                    thickness: 0.,
+                },
+            )),
+            part(IfccadDimensionGraphicsKind::Text(IfccadText {
+                style_id,
+                placement: p.clone(),
+                rotation: 0.,
+                backward: false,
+                upside_down: false,
+                layout: TextLayout::Anchored {
+                    horizontal: TextHorizontalAlignment::Left,
+                    vertical: TextVerticalAlignment::Baseline,
+                    height: 2. * f,
+                    width_factor: 1.,
+                },
+                oblique_angle: 0.,
+                thickness: 0.,
+                content: vec![TextRun {
+                    text: "1200 mm".into(),
+                    underline: false,
+                    overline: false,
+                    strike_through: false,
+                }],
+            })),
+            part(IfccadDimensionGraphicsKind::MText(Box::new(IfccadMText {
+                style_id,
+                placement: p,
+                rotation: 0.,
+                backward: false,
+                upside_down: false,
+                height: 2. * f,
+                attachment: MTextAttachment::TopLeft,
+                flow: MTextFlow::ByStyle,
+                wrap_width: None,
+                columns: None,
+                background: None,
+                character_format: Default::default(),
+                paragraph_format: Default::default(),
+                content: vec![MTextParagraph {
+                    inlines: vec![MTextInline::Run {
+                        text: if case.data["unbraced"] == true {
+                            "240"
+                        } else {
+                            "1200 mm"
+                        }
+                        .into(),
+                        character_format: CharacterFormat {
+                            position: if case.data["unbraced"] == true {
+                                Some(TextPosition::Center)
+                            } else {
+                                None
+                            },
+                            ..Default::default()
+                        },
+                    }],
+                    ..Default::default()
+                }],
+            }))),
+        ]);
+    }
+    let counterparts = dim
+        .graphics
+        .as_ref()
+        .map(|g| g.parts.clone())
+        .unwrap_or_default();
     let marker = fresh(
         &mut d,
         &template,
@@ -400,6 +521,57 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
             placement: identity([30. * f, 5. * f, 2. * f]),
         },
     ));
+    if case.data["wide_picture"] == true {
+        let mut ordinary = Vec::new();
+        for part in counterparts {
+            let mut kind: IfccadEntityKind = part.kind.into();
+            let offset = [16. * f, 8. * f, 0.];
+            let shift = |p: &mut IfccadPlacement| p.origin = add(p.origin, offset);
+            match &mut kind {
+                IfccadEntityKind::LineSegment { start, end } => {
+                    *start = add(*start, offset);
+                    *end = add(*end, offset);
+                }
+                IfccadEntityKind::SpatialPolyline { vertices, .. } => {
+                    for v in vertices {
+                        *v = add(*v, offset);
+                    }
+                }
+                IfccadEntityKind::Point { placement }
+                | IfccadEntityKind::Circle { placement, .. }
+                | IfccadEntityKind::Arc { placement, .. }
+                | IfccadEntityKind::Ellipse { placement, .. }
+                | IfccadEntityKind::PlanarPolyline { placement, .. } => shift(placement),
+                IfccadEntityKind::Solid(q) => shift(&mut q.placement),
+                IfccadEntityKind::Text(t) => shift(&mut t.placement),
+                IfccadEntityKind::MText(t) => shift(&mut t.placement),
+                IfccadEntityKind::BlockInstance { transform, .. } => {
+                    shift(&mut transform.placement)
+                }
+                _ => panic!(),
+            }
+            ordinary.push(fresh(&mut d, &template, kind));
+        }
+        d.blocks.push(block(
+            20,
+            "Picture counterparts".into(),
+            [0.; 3],
+            ordinary,
+            &d.length_unit,
+        ));
+        members.push(fresh(
+            &mut d,
+            &template,
+            IfccadEntityKind::BlockInstance {
+                definition_id: 20,
+                transform: IfccadBlockTransform {
+                    placement: identity([0.; 3]),
+                    rotation: 0.,
+                    scale: [1.; 3],
+                },
+            },
+        ));
+    }
     members.push(fresh(
         &mut d,
         &template,
@@ -438,7 +610,11 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
         )];
     }
     d.model.entities = members;
-    d.id_counters.next_block_id = 11;
+    d.id_counters.next_block_id = if case.data["wide_picture"] == true {
+        21
+    } else {
+        11
+    };
     validate_ifccad_document(&d).unwrap();
     d
 }
@@ -446,7 +622,7 @@ pub fn read_native(d: &IfccadDocument) -> Document {
     let bytes = encode_ifccad_document(d).unwrap();
     strict_native(bytes.bytes());
     let (cad, losses) = Ifcx.read(bytes.bytes()).unwrap();
-    assert!(losses.is_empty(), "{losses:?}");
+    assert_retained_or_empty(&losses);
     cad
 }
 pub fn cad_source(case: &SpatialCase) -> Document {
@@ -475,85 +651,285 @@ pub fn cad_source(case: &SpatialCase) -> Document {
         i.set_y_scale(scale[1]);
         i.set_z_scale(scale[2]);
     }
+    if case.data["unbraced"] == true {
+        let handles: Vec<_> = cad
+            .entities()
+            .filter_map(|e| matches!(e, EntityType::MText(_)).then_some(e.common().handle))
+            .collect();
+        for h in handles {
+            let EntityType::MText(m) = cad.get_entity_mut(h).unwrap() else {
+                panic!()
+            };
+            m.value = r"\A1;240".into();
+        }
+    }
     cad
 }
 
+pub fn assert_retained_or_empty(losses: &[opencaddocument::Loss]) {
+    assert!(
+        losses.iter().all(|l| l
+            .message
+            .contains("graphics retained with numerical rounding")),
+        "{losses:?}"
+    );
+}
+
+fn curve(out: &mut Observation, key: &str, t: Affine, a: V, b: V, sweep: f64, full: bool) {
+    out.insert(key,serde_json::json!({"center":t.origin,"a":linear(t.cols,a),"b":linear(t.cols,b),"sweep":sweep,"circle":full}));
+}
+fn polyline(out: &mut Observation, prefix: &str, t: Affine, vertices: &[[f64; 2]], bulges: &[f64]) {
+    assert_eq!(vertices.len(), 2);
+    assert_eq!(bulges, &[0.5, 0.]);
+    for (i, p) in vertices.iter().enumerate() {
+        out.point(&format!("{prefix}polyline/{i}"), t, [p[0], p[1], 0.]);
+    }
+    let (a, b) = (vertices[0], vertices[1]);
+    let bulge = bulges[0];
+    let f = (1. - bulge * bulge) / (4. * bulge);
+    let center = [
+        (a[0] + b[0]) / 2. - (b[1] - a[1]) * f,
+        (a[1] + b[1]) / 2. + (b[0] - a[0]) * f,
+        0.,
+    ];
+    let aa = [a[0] - center[0], a[1] - center[1], 0.];
+    let bb = [-aa[1], aa[0], 0.];
+    curve(
+        out,
+        &format!("{prefix}polyline/bulge"),
+        t.then(Affine {
+            origin: center,
+            ..Affine::ID
+        }),
+        aa,
+        bb,
+        4. * bulge.atan(),
+        false,
+    );
+}
+fn text_observation(
+    out: &mut Observation,
+    key: &str,
+    t: Affine,
+    height: f64,
+    value: &str,
+    center: bool,
+) {
+    out.point(&format!("{key}/anchor"), t, [0.; 3]);
+    out.point(&format!("{key}/direction"), t, [1., 0., 0.]);
+    out.point(&format!("{key}/height"), t, [0., height, 0.]);
+    out.insert(
+        &format!("{key}/content"),
+        serde_json::json!({"text":value,"format":if center {"center"}else{"plain"}}),
+    );
+}
+fn native_text(value: &IfccadMText) -> (&str, bool) {
+    assert_eq!(value.content.len(), 1);
+    assert_eq!(value.content[0].inlines.len(), 1);
+    let MTextInline::Run {
+        text,
+        character_format,
+    } = &value.content[0].inlines[0]
+    else {
+        panic!()
+    };
+    assert!(!character_format.underline.unwrap_or(false));
+    assert!(character_format.font.is_none());
+    let position = character_format
+        .position
+        .or(value.character_format.position)
+        .unwrap_or(TextPosition::Bottom);
+    (text, position == TextPosition::Center)
+}
 pub fn native_world(d: &IfccadDocument) -> Observation {
     fn walk(
         d: &IfccadDocument,
         entities: &[IfccadEntity],
         t: Affine,
-        marker: bool,
+        prefix: &str,
         out: &mut Observation,
         depth: usize,
     ) {
         assert!(depth < 8);
         for entity in entities {
-            match &entity.as_native().unwrap().kind {
-                IfccadEntityKind::BlockInstance {
-                    definition_id,
-                    transform,
-                } => {
-                    let b = d.blocks.iter().find(|b| b.id == *definition_id).unwrap();
-                    walk(
-                        d,
-                        &b.entities,
-                        t.then(frame(&transform.placement).block(
-                            transform.rotation,
-                            transform.scale,
-                            b.base_point,
-                        )),
-                        marker,
-                        out,
-                        depth + 1,
-                    );
+            let e = entity.as_native().unwrap();
+            visit(d, &e.kind, t, prefix, e.layer_id, out, depth);
+        }
+    }
+    fn visit(
+        d: &IfccadDocument,
+        kind: &IfccadEntityKind,
+        t: Affine,
+        prefix: &str,
+        layer: u64,
+        out: &mut Observation,
+        depth: usize,
+    ) {
+        match kind {
+            IfccadEntityKind::BlockInstance {
+                definition_id,
+                transform,
+            } => {
+                let b = d.blocks.iter().find(|b| b.id == *definition_id).unwrap();
+                let child = t.then(frame(&transform.placement).block(
+                    transform.rotation,
+                    transform.scale,
+                    b.base_point,
+                ));
+                let next = if b.name == "Picture counterparts" {
+                    "ordinary/".into()
+                } else if b.name == "Marker" {
+                    format!("{prefix}marker/")
+                } else {
+                    prefix.into()
+                };
+                walk(d, &b.entities, child, &next, out, depth + 1);
+            }
+            IfccadEntityKind::LineSegment { start, end } => {
+                let key = if prefix.ends_with("marker/") {
+                    prefix.to_owned()
+                } else {
+                    format!("{prefix}line/")
+                };
+                out.point(&format!("{key}start"), t, *start);
+                out.point(&format!("{key}end"), t, *end);
+            }
+            IfccadEntityKind::Point { placement } => {
+                out.point(&format!("{prefix}point"), t, placement.origin)
+            }
+            IfccadEntityKind::Circle { radius, placement } => out.conic(
+                &format!("{prefix}circle"),
+                t.then(frame(placement)),
+                *radius,
+                0.,
+                TAU,
+                true,
+            ),
+            IfccadEntityKind::Arc {
+                radius,
+                start_parameter,
+                sweep_parameter,
+                placement,
+            } => out.conic(
+                &format!("{prefix}arc"),
+                t.then(frame(placement)),
+                *radius,
+                *start_parameter,
+                *sweep_parameter,
+                false,
+            ),
+            IfccadEntityKind::Ellipse {
+                semi_major_radius,
+                semi_minor_radius,
+                placement,
+            } => curve(
+                out,
+                &format!("{prefix}ellipse"),
+                t.then(frame(placement)),
+                [*semi_major_radius, 0., 0.],
+                [0., *semi_minor_radius, 0.],
+                TAU,
+                true,
+            ),
+            IfccadEntityKind::PlanarPolyline {
+                placement,
+                vertices,
+                bulges,
+                closed,
+                widths,
+                ..
+            } => {
+                assert!(!closed);
+                assert_eq!(
+                    *widths,
+                    IfccadPlanarPolylineWidths::Constant { width: 0.25 }
+                );
+                polyline(out, prefix, t.then(frame(placement)), vertices, bulges);
+            }
+            IfccadEntityKind::SpatialPolyline {
+                vertices, closed, ..
+            } => {
+                assert!(!closed);
+                assert_eq!(vertices.len(), 2);
+                for (i, p) in vertices.iter().enumerate() {
+                    out.point(&format!("{prefix}spatial/{i}"), t, *p);
                 }
-                IfccadEntityKind::LineSegment { start, end } => {
-                    let prefix = if marker { "picture/marker" } else { "line" };
-                    out.point(&format!("{prefix}/start"), t, *start);
-                    out.point(&format!("{prefix}/end"), t, *end);
+            }
+            IfccadEntityKind::Solid(q) => {
+                assert_eq!(q.thickness, 0.);
+                let tt = t.then(frame(&q.placement));
+                for (i, p) in q.corners.iter().enumerate() {
+                    out.point(&format!("{prefix}solid/{i}"), tt, [p[0], p[1], 0.]);
                 }
-                IfccadEntityKind::Circle { radius, placement } => {
-                    out.conic("circle", t.then(frame(placement)), *radius, 0., TAU, true)
-                }
-                IfccadEntityKind::Arc {
-                    radius,
-                    start_parameter,
-                    sweep_parameter,
-                    placement,
-                } => out.conic(
-                    "arc",
-                    t.then(frame(placement)),
-                    *radius,
-                    *start_parameter,
-                    *sweep_parameter,
+            }
+            IfccadEntityKind::Text(v) => {
+                assert_eq!(v.content.len(), 1);
+                let TextLayout::Anchored { height, .. } = v.layout else {
+                    panic!()
+                };
+                assert_eq!(
+                    d.text_styles
+                        .iter()
+                        .find(|s| s.id == v.style_id)
+                        .unwrap()
+                        .name,
+                    "Dimension text"
+                );
+                text_observation(
+                    out,
+                    &format!("{prefix}text"),
+                    t.then(frame(&v.placement).block(v.rotation, [1.; 3], [0.; 3])),
+                    height,
+                    &v.content[0].text,
                     false,
-                ),
-                IfccadEntityKind::Dimension(dim) => {
-                    let dt = t.then(frame(&dim.placement));
-                    let (a, b) = dim.definition.reference_points();
-                    out.point("dimension/first", dt, a);
-                    out.point("dimension/second", dt, b);
-                    let line = match &dim.definition {
-                        DimensionDefinition::Linear {
-                            dimension_line_point,
-                            ..
-                        } => *dimension_line_point,
-                        _ => panic!(),
-                    };
-                    out.point("dimension/line", dt, [line[0], line[1], 0.]);
-                    assert_eq!(
-                        d.dimension_styles
-                            .iter()
-                            .find(|s| s.id == dim.style_id)
-                            .unwrap()
-                            .name,
-                        "Building"
-                    );
-                    let Some(picture) = dim.graphics.as_ref() else {
-                        continue;
-                    };
-                    assert_eq!(picture.parts.len(), 4);
+                );
+            }
+            IfccadEntityKind::MText(v) => {
+                assert_eq!(
+                    d.text_styles
+                        .iter()
+                        .find(|s| s.id == v.style_id)
+                        .unwrap()
+                        .name,
+                    "Dimension text"
+                );
+                let (text, center) = native_text(v);
+                text_observation(
+                    out,
+                    &format!("{prefix}mtext"),
+                    t.then(frame(&v.placement).block(v.rotation, [1.; 3], [0.; 3])),
+                    v.height,
+                    text,
+                    center,
+                );
+            }
+            IfccadEntityKind::Dimension(dim) => {
+                let dt = t.then(frame(&dim.placement));
+                let (a, b) = dim.definition.reference_points();
+                out.point("dimension/first", dt, a);
+                out.point("dimension/second", dt, b);
+                let DimensionDefinition::Linear {
+                    dimension_line_point,
+                    ..
+                } = &dim.definition
+                else {
+                    panic!()
+                };
+                out.point(
+                    "dimension/line",
+                    dt,
+                    [dimension_line_point[0], dimension_line_point[1], 0.],
+                );
+                assert_eq!(
+                    d.dimension_styles
+                        .iter()
+                        .find(|s| s.id == dim.style_id)
+                        .unwrap()
+                        .name,
+                    "Building"
+                );
+                if let Some(picture) = &dim.graphics {
+                    assert!(matches!(picture.parts.len(), 4 | 11));
                     assert!(matches!(
                         picture.parts[0].kind,
                         IfccadDimensionGraphicsKind::LineSegment { .. }
@@ -574,55 +950,25 @@ pub fn native_world(d: &IfccadDocument) -> Observation {
                         assert!(p.visible);
                         assert_eq!(p.line_pattern_scale, 1.);
                         assert_eq!(p.purpose, IfccadDimensionGraphicsPurpose::Display);
-                        assert_eq!(
-                            p.layer_id.unwrap_or(entity.as_native().unwrap().layer_id),
-                            entity.as_native().unwrap().layer_id
-                        );
+                        assert_eq!(p.layer_id.unwrap_or(layer), layer);
                         assert_eq!(p.appearance, part(p.kind.clone()).appearance);
-                        match &p.kind {
-                            IfccadDimensionGraphicsKind::LineSegment { start, end } => {
-                                out.point("picture/line/start", dt, *start);
-                                out.point("picture/line/end", dt, *end);
-                            }
-                            IfccadDimensionGraphicsKind::Circle { radius, placement } => out.conic(
-                                "picture/circle",
-                                dt.then(frame(placement)),
-                                *radius,
-                                0.,
-                                TAU,
-                                true,
-                            ),
-                            IfccadDimensionGraphicsKind::Point { placement } => {
-                                out.point("picture/point", dt, placement.origin)
-                            }
-                            IfccadDimensionGraphicsKind::BlockInstance {
-                                definition_id,
-                                transform,
-                            } => {
-                                let b = d.blocks.iter().find(|b| b.id == *definition_id).unwrap();
-                                walk(
-                                    d,
-                                    &b.entities,
-                                    dt.then(frame(&transform.placement).block(
-                                        transform.rotation,
-                                        transform.scale,
-                                        b.base_point,
-                                    )),
-                                    true,
-                                    out,
-                                    depth + 1,
-                                );
-                            }
-                            kind => panic!("unexpected picture kind {kind:?}"),
-                        }
+                        visit(
+                            d,
+                            &p.kind.clone().into(),
+                            dt,
+                            "picture/",
+                            layer,
+                            out,
+                            depth + 1,
+                        );
                     }
                 }
-                kind => panic!("unexpected native kind {kind:?}"),
             }
+            kind => panic!("unexpected native kind {kind:?}"),
         }
     }
     let mut out = Observation::new();
-    walk(d, &d.model.entities, Affine::ID, false, &mut out, 0);
+    walk(d, &d.model.entities, Affine::ID, "", &mut out, 0);
     out
 }
 
@@ -634,8 +980,7 @@ pub fn cad_owner_world(d: &Document, owner: Option<&str>) -> Observation {
         d: &Document,
         entities: Vec<&EntityType>,
         t: Affine,
-        picture: bool,
-        marker: bool,
+        prefix: &str,
         out: &mut Observation,
         depth: usize,
     ) {
@@ -644,54 +989,158 @@ pub fn cad_owner_world(d: &Document, owner: Option<&str>) -> Observation {
             match e {
                 EntityType::Insert(i) => {
                     let b = d.block_records.get(&i.block_name).unwrap();
-                    let child = cad_frame(cv(i.insert_point), cv(i.normal)).block(
+                    let next = if b.name == "Picture counterparts" {
+                        "ordinary/".into()
+                    } else if b.name == "Marker" {
+                        format!("{prefix}marker/")
+                    } else {
+                        prefix.into()
+                    };
+                    let child = t.then(cad_frame(cv(i.insert_point), cv(i.normal)).block(
                         i.rotation,
                         [i.x_scale(), i.y_scale(), i.z_scale()],
                         cv(b.base_point),
-                    );
+                    ));
                     walk(
                         d,
                         d.entities_in_block(&i.block_name)
                             .filter(|e| e.common().owner_handle == b.handle)
                             .collect(),
-                        t.then(child),
-                        picture,
-                        picture,
+                        child,
+                        &next,
                         out,
                         depth + 1,
                     );
                 }
-                EntityType::Line(l) => {
-                    let prefix = if marker {
-                        "picture/marker"
-                    } else if picture {
-                        "picture/line"
+                EntityType::Line(v) => {
+                    let key = if prefix.ends_with("marker/") {
+                        prefix.to_owned()
                     } else {
-                        "line"
+                        format!("{prefix}line/")
                     };
-                    out.point(&format!("{prefix}/start"), t, cv(l.start));
-                    out.point(&format!("{prefix}/end"), t, cv(l.end));
+                    out.point(&format!("{key}start"), t, cv(v.start));
+                    out.point(&format!("{key}end"), t, cv(v.end));
                 }
-                EntityType::Circle(c) => out.conic(
-                    if picture { "picture/circle" } else { "circle" },
-                    t.then(cad_frame(cv(c.center), cv(c.normal))),
-                    c.radius,
+                EntityType::Point(v) => out.point(&format!("{prefix}point"), t, cv(v.location)),
+                EntityType::Circle(v) => out.conic(
+                    &format!("{prefix}circle"),
+                    t.then(cad_frame(cv(v.center), cv(v.normal))),
+                    v.radius,
                     0.,
                     TAU,
                     true,
                 ),
-                EntityType::Arc(a) => out.conic(
-                    "arc",
-                    t.then(cad_frame(cv(a.center), cv(a.normal))),
-                    a.radius,
-                    a.start_angle,
-                    (a.end_angle - a.start_angle).rem_euclid(TAU),
+                EntityType::Arc(v) => out.conic(
+                    &format!("{prefix}arc"),
+                    t.then(cad_frame(cv(v.center), cv(v.normal))),
+                    v.radius,
+                    v.start_angle,
+                    (v.end_angle - v.start_angle).rem_euclid(TAU),
                     false,
                 ),
-                EntityType::Point(p) if picture => out.point("picture/point", t, cv(p.location)),
+                EntityType::Ellipse(v) => {
+                    assert_eq!(v.start_parameter, 0.);
+                    assert_eq!(v.end_parameter, TAU);
+                    let aa = cv(v.major_axis);
+                    let bb = mul(cross(unit(cv(v.normal)), aa), v.minor_axis_ratio);
+                    curve(
+                        out,
+                        &format!("{prefix}ellipse"),
+                        t.then(Affine {
+                            origin: cv(v.center),
+                            ..Affine::ID
+                        }),
+                        aa,
+                        bb,
+                        TAU,
+                        true,
+                    );
+                }
+                EntityType::LwPolyline(v) => {
+                    assert!(!v.is_closed);
+                    for vertex in &v.vertices {
+                        for width in [vertex.start_width, vertex.end_width] {
+                            assert_eq!(if width == 0. { v.constant_width } else { width }, 0.25);
+                        }
+                    }
+                    let local = cad_frame([0., 0., v.elevation], cv(v.normal));
+                    polyline(
+                        out,
+                        prefix,
+                        t.then(local),
+                        &v.vertices
+                            .iter()
+                            .map(|p| [p.location.x, p.location.y])
+                            .collect::<Vec<_>>(),
+                        &v.vertices.iter().map(|p| p.bulge).collect::<Vec<_>>(),
+                    );
+                }
+                EntityType::Polyline3D(v) => {
+                    assert!(!v.flags.closed);
+                    assert_eq!(v.vertices.len(), 2);
+                    for (i, p) in v.vertices.iter().enumerate() {
+                        out.point(&format!("{prefix}spatial/{i}"), t, cv(p.position));
+                    }
+                }
+                EntityType::Solid(v) => {
+                    assert!(!v.is_trace);
+                    assert_eq!(v.thickness, 0.);
+                    let tt = t.then(cad_frame([0.; 3], cv(v.normal)));
+                    for (i, p) in [
+                        v.first_corner,
+                        v.second_corner,
+                        v.third_corner,
+                        v.fourth_corner,
+                    ]
+                    .iter()
+                    .enumerate()
+                    {
+                        out.point(&format!("{prefix}solid/{i}"), tt, cv(*p));
+                    }
+                }
+                EntityType::Text(v) => {
+                    assert_eq!(v.generation_flags, 0);
+                    assert!(v.style.eq_ignore_ascii_case("Dimension text"));
+                    text_observation(
+                        out,
+                        &format!("{prefix}text"),
+                        t.then(
+                            cad_frame(cv(v.insertion_point), cv(v.normal))
+                                .block(v.rotation, [1.; 3], [0.; 3]),
+                        ),
+                        v.height,
+                        &v.value,
+                        false,
+                    );
+                }
+                EntityType::MText(v) => {
+                    assert!(v.style.eq_ignore_ascii_case("Dimension text"));
+                    let (value, center) = match v.value.as_str() {
+                        "1200 mm" | "{1200 mm}" => ("1200 mm", false),
+                        r"\A1;240" | r"{\A1;240}" => ("240", true),
+                        value => panic!("unexpected fixture text {value}"),
+                    };
+                    let x = unit(v.dwg_x_direction.map(cv).unwrap_or([
+                        v.rotation.cos(),
+                        v.rotation.sin(),
+                        0.,
+                    ]));
+                    let z = unit(cv(v.normal));
+                    text_observation(
+                        out,
+                        &format!("{prefix}mtext"),
+                        t.then(Affine {
+                            cols: [x, cross(z, x), z],
+                            origin: cv(v.insertion_point),
+                        }),
+                        v.height,
+                        value,
+                        center,
+                    );
+                }
                 EntityType::Dimension(dim) => {
                     let (a, b) = match dim.as_ref() {
-                        Dimension::Linear(l) => (l.first_point, l.second_point),
+                        Dimension::Linear(v) => (v.first_point, v.second_point),
                         _ => panic!(),
                     };
                     out.point("dimension/first", t, cv(a));
@@ -702,25 +1151,23 @@ pub fn cad_owner_world(d: &Document, owner: Option<&str>) -> Observation {
                     if name.is_empty() {
                         continue;
                     }
-                    let record = d.block_records.get(name).unwrap();
+                    let b = d.block_records.get(name).unwrap();
                     let members: Vec<_> = d
                         .entities_in_block(name)
                         .filter(|e| {
-                            e.common().owner_handle == record.handle
+                            e.common().owner_handle == b.handle
                                 && !matches!(e, EntityType::Block(_) | EntityType::BlockEnd(_))
                         })
                         .collect();
-                    assert_eq!(members.len(), 4);
+                    assert!(matches!(members.len(), 4 | 11));
                     assert!(matches!(members[0], EntityType::Line(_)));
                     assert!(matches!(members[1], EntityType::Circle(_)));
                     assert!(matches!(members[2], EntityType::Point(_)));
                     assert!(matches!(members[3], EntityType::Insert(_)));
-                    walk(d, members, t, true, false, out, depth + 1);
+                    walk(d, members, t, "picture/", out, depth + 1);
                 }
                 EntityType::Block(_) | EntityType::BlockEnd(_) => {}
-                // The paper layout's overall viewport is sheet state, not
-                // authored geometry; ownership is checked separately.
-                EntityType::Viewport(v) if !picture && v.id == 1 => {}
+                EntityType::Viewport(v) if prefix.is_empty() && v.id == 1 => {}
                 kind => panic!("unexpected CAD kind {kind:?}"),
             }
         }
@@ -751,7 +1198,7 @@ pub fn cad_owner_world(d: &Document, owner: Option<&str>) -> Observation {
         }
     };
     let mut out = Observation::new();
-    walk(d, entities, Affine::ID, false, false, &mut out, 0);
+    walk(d, entities, Affine::ID, "", &mut out, 0);
     out
 }
 
@@ -763,26 +1210,42 @@ pub enum Transport {
     Dwg,
 }
 pub fn transport(d: &Document, t: Transport) -> Document {
-    match t {
-        Transport::Direct => d.clone(),
+    let outcome = match t {
+        Transport::Direct => return d.clone(),
         Transport::AsciiDxf => {
             DxfReader::from_reader(Cursor::new(DxfWriter::new(d).write_to_vec().unwrap()))
                 .unwrap()
-                .read()
+                .read_with_stats()
                 .unwrap()
         }
         Transport::BinaryDxf => DxfReader::from_reader(Cursor::new(
             DxfWriter::new_binary(d).write_to_vec().unwrap(),
         ))
         .unwrap()
-        .read()
+        .read_with_stats()
         .unwrap(),
         Transport::Dwg => {
             let bytes = DwgWriter::write_to_vec(d).unwrap();
             assert!(bytes.starts_with(b"AC1032"));
-            DwgReader::from_stream(Cursor::new(bytes)).read().unwrap()
+            DwgReader::from_stream(Cursor::new(bytes))
+                .read_with_stats()
+                .unwrap()
         }
-    }
+    };
+    assert!(outcome.stats.record_stream_read && outcome.stats.stream_completed);
+    assert!(!outcome.stats.recovery_mode);
+    assert_eq!(outcome.stats.recovered_errors, 0);
+    assert_eq!(outcome.stats.skipped_source_records, 0);
+    assert!(
+        outcome.stats.diagnostics.is_empty(),
+        "{:?}",
+        outcome.stats.diagnostics
+    );
+    assert_eq!(
+        outcome.stats.output_entities,
+        outcome.document.entities().count()
+    );
+    outcome.document
 }
 pub fn assert_three_cycles(case: &SpatialCase, route: Transport, cad_first: bool) {
     let direction = if cad_first { "cad" } else { "native" };
@@ -803,11 +1266,7 @@ pub fn assert_three_cycles(case: &SpatialCase, route: Transport, cad_first: bool
             &format!("{route:?} transport {cycle}"),
         );
         let (bytes, losses) = Ifcx.write(&cad).unwrap();
-        assert!(
-            losses.is_empty(),
-            "{} {direction} {route:?} cycle {cycle}: {losses:?}",
-            case.name()
-        );
+        assert_retained_or_empty(&losses);
         let native = strict_native(&bytes);
         let observed = native_world(&native);
         case.assert_world(&observed, direction, &format!("{route:?} native {cycle}"));
@@ -822,7 +1281,7 @@ pub fn assert_three_cycles(case: &SpatialCase, route: Transport, cad_first: bool
             first = Some(observed);
         }
         let (back, losses) = Ifcx.read(&bytes).unwrap();
-        assert!(losses.is_empty(), "{losses:?}");
+        assert_retained_or_empty(&losses);
         cad = back;
         case.assert_world(
             &cad_world(&cad),

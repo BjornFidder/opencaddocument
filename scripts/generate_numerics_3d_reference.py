@@ -6,6 +6,7 @@ coefficient comparison is a numerical bound, not an interval certificate.
 Run without arguments to regenerate the oracle; --init also regenerates cases.
 """
 import argparse
+import copy
 from decimal import Decimal as D, getcontext
 import hashlib
 import json
@@ -60,6 +61,15 @@ def sin(x):
 
 def cos(x):
     return sin(dec(x) + PI / 2)
+
+def atan(x):
+    x=dec(x);factor=1
+    while abs(x)>D('0.1'):
+        x=x/(1+(1+x*x).sqrt());factor*=2
+    term=total=x;n=1
+    while abs(term)>D('1e-105'):
+        term*=-x*x;total+=term/(2*n+1);n+=1
+    return total*factor
 
 
 ZERO = vec([0, 0, 0])
@@ -150,8 +160,7 @@ def make_cases():
                      rotation=-.43, scale=[1., -1., 2.], base=[2*f, 3*f, 4*f])
         case('nested_'+unit, [inner, outer], 1e-5, unit, mm, unit == 'cm')
         cases[-1]['physical_equivalent'] = True
-        # Fractional marker inverse qualification is deliberately PR 2 scope.
-        cases[-1]['picture'] = unit == 'cm'
+        cases[-1]['picture'] = True
     case('three_levels', [pose([.3, .4, .8660254037844386], rotation=.37),
                          pose([-.4, .3, .8660254037844386], rotation=-.43, base=[2., 3., 4.]),
                          pose([.2, -.3, .9327379053088815], rotation=.27, scale=[-1., 2., 1.])], 1e-5)
@@ -160,6 +169,10 @@ def make_cases():
     separate = pose([.3, .4, .8660254037844386], rotation=.61, scale=[-2., .5, 1.])
     separate['extra_rotation'] = .27
     case('separate_rotation', [separate])
+    for name,base in [('wide_aa','aa_x_below'),('wide_nested','nested_cm'),('wide_mtext','nested_cm')]:
+        wide=copy.deepcopy(next(c for c in cases if c['name']==base))
+        wide.update(name=name,wide_picture=True,transports=True,unbraced=name=='wide_mtext')
+        cases.append(wide)
     return cases
 
 
@@ -194,6 +207,21 @@ def geometry(case, direction):
     # Dimension origin + marker origin + signed scale * (member - block base).
     point('picture/marker/start', [26, 15, 0])
     point('picture/marker/end', [24, 17, 0])
+    if case.get('wide_picture'):
+        def conic(key,center,a,b,sweep,full=False):
+            out[key]=dict(center=at(t,mul(vec(center),factor)),a=linear(t[0],mul(vec(a),factor)),b=linear(t[0],mul(vec(b),factor)),sweep=sweep,circle=full)
+        conic('picture/arc',[18,12,0],[2,0,0],[0,2,0],D(1))
+        conic('picture/ellipse',[18,12,0],[2,0,0],[0,1,0],2*PI,True)
+        point('picture/polyline/0',[18,12,0]);point('picture/polyline/1',[20,13,0])
+        conic('picture/polyline/bulge',[D('18.625'),D('13.25'),0],[D('-.625'),D('-1.25'),0],[D('1.25'),D('-.625'),0],4*atan(D('.5')))
+        point('picture/spatial/0',[16,8,1]);point('picture/spatial/1',[18,9,2])
+        for i,p in enumerate([[18,12,0],[20,12,0],[18,13,0],[18,13,0]]):point(f'picture/solid/{i}',p)
+        for kind in ['text','mtext']:
+            point(f'picture/{kind}/anchor',[18,12,0]);point(f'picture/{kind}/direction',[19,12,0]);point(f'picture/{kind}/height',[18,14,0])
+            centered=kind=='mtext' and case.get('unbraced')
+            out[f'picture/{kind}/content']=dict(text='240' if centered else '1200 mm',format='center' if centered else 'plain')
+        for key,value in list(out.items()):
+            if key.startswith('picture/'):out[key.replace('picture/','ordinary/',1)]=copy.deepcopy(value)
     return out
 
 
