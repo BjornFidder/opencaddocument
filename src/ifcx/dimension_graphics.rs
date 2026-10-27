@@ -8,6 +8,48 @@ use ifccad::{
 };
 use std::collections::BTreeSet;
 mod geometry;
+mod semantics;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum NumericCategory {
+    Position,
+    Direction,
+    Length,
+    Angle,
+    Spacing,
+}
+#[derive(Default)]
+struct PictureNumerics {
+    categories: BTreeSet<NumericCategory>,
+    first_path: Option<String>,
+}
+impl PictureNumerics {
+    fn record(&mut self, path: &str, category: NumericCategory) {
+        self.first_path.get_or_insert_with(|| path.into());
+        self.categories.insert(category);
+    }
+    fn summary(&self, label: &str, handle: Option<Handle>) -> Option<Loss> {
+        let path = self.first_path.as_ref()?;
+        let categories = self
+            .categories
+            .iter()
+            .map(|c| match c {
+                NumericCategory::Position => "position",
+                NumericCategory::Direction => "direction",
+                NumericCategory::Length => "derived length",
+                NumericCategory::Angle => "derived angle",
+                NumericCategory::Spacing => "spacing",
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(Loss {
+            handle,
+            message: format!(
+                "{label} graphics retained with numerical rounding ({categories}); first {path}"
+            ),
+        })
+    }
+}
 
 enum Problem {
     Unsupported(String),
@@ -34,56 +76,68 @@ fn finite(value: f64) -> Prepared<f64> {
     }
 }
 
-/// Error-free TwoSum: bound translation rounding in drawing units.
-fn add(a: f64, b: f64) -> Prepared<f64> {
+/// Observe a TwoSum residual without making it an acceptance criterion.
+fn add(a: f64, b: f64, path: &str, numerics: &mut PictureNumerics) -> Prepared<f64> {
     finite(a)?;
     finite(b)?;
     let sum = finite(a + b)?;
-    let bv = finite(sum - a)?;
-    let av = finite(sum - bv)?;
-    let error = finite((a - av) + (b - bv))?;
-    if error.abs() <= geometry::POSITION {
-        Ok(sum)
-    } else {
-        Err(unsupported(
-            "coordinate translation exceeds the absolute picture budget",
-        ))
+    let bv = sum - a;
+    let av = sum - bv;
+    let error = (a - av) + (b - bv);
+    if error.is_finite() && error != 0. {
+        numerics.record(path, NumericCategory::Position);
     }
+    Ok(sum)
 }
-fn point(p: [f64; 3], offset: [f64; 3]) -> Prepared<[f64; 3]> {
+fn point(
+    p: [f64; 3],
+    offset: [f64; 3],
+    path: &str,
+    numerics: &mut PictureNumerics,
+) -> Prepared<[f64; 3]> {
     Ok([
-        add(p[0], offset[0])?,
-        add(p[1], offset[1])?,
-        add(p[2], offset[2])?,
+        add(p[0], offset[0], path, numerics)?,
+        add(p[1], offset[1], path, numerics)?,
+        add(p[2], offset[2], path, numerics)?,
     ])
 }
-fn frame(p: &mut IfccadPlacement, offset: [f64; 3]) -> Prepared<()> {
+fn frame(
+    p: &mut IfccadPlacement,
+    offset: [f64; 3],
+    path: &str,
+    numerics: &mut PictureNumerics,
+) -> Prepared<()> {
     for v in p.origin.into_iter().chain(p.x_axis).chain(p.y_axis) {
         finite(v)?;
     }
     geometry::validate_frame(p)?;
-    p.origin = point(p.origin, offset)?;
+    p.origin = point(p.origin, offset, path, numerics)?;
     Ok(())
 }
 
 /// Factor equivalent XY origins; retain other qualified orthonormal frames.
-fn canonical(mut kind: IfccadEntityKind, offset: [f64; 3]) -> Prepared<IfccadEntityKind> {
+fn canonical(
+    mut kind: IfccadEntityKind,
+    offset: [f64; 3],
+    path: &str,
+    numerics: &mut PictureNumerics,
+) -> Prepared<IfccadEntityKind> {
     match &mut kind {
         IfccadEntityKind::LineSegment { start, end } => {
-            *start = point(*start, offset)?;
-            *end = point(*end, offset)?;
+            *start = point(*start, offset, path, numerics)?;
+            *end = point(*end, offset, path, numerics)?;
         }
         IfccadEntityKind::SpatialPolyline { vertices, .. } => {
             for p in vertices {
-                *p = point(*p, offset)?;
+                *p = point(*p, offset, path, numerics)?;
             }
         }
-        IfccadEntityKind::Point { placement } => frame(placement, offset)?,
+        IfccadEntityKind::Point { placement } => frame(placement, offset, path, numerics)?,
         IfccadEntityKind::Circle { placement, radius }
         | IfccadEntityKind::Arc {
             placement, radius, ..
         } => {
-            frame(placement, offset)?;
+            frame(placement, offset, path, numerics)?;
             if finite(*radius)? <= 0.0 {
                 return Err(invalid("invalid picture radius"));
             }
@@ -99,7 +153,7 @@ fn canonical(mut kind: IfccadEntityKind, offset: [f64; 3]) -> Prepared<IfccadEnt
             semi_minor_radius,
             ..
         } => {
-            frame(placement, offset)?;
+            frame(placement, offset, path, numerics)?;
             finite(*semi_major_radius)?;
             finite(*semi_minor_radius)?;
         }
@@ -110,11 +164,11 @@ fn canonical(mut kind: IfccadEntityKind, offset: [f64; 3]) -> Prepared<IfccadEnt
             widths,
             ..
         } => {
-            frame(placement, offset)?;
+            frame(placement, offset, path, numerics)?;
             if placement.x_axis == [1., 0., 0.] && placement.y_axis == [0., 1., 0.] {
                 for v in vertices.iter_mut() {
-                    v[0] = add(v[0], placement.origin[0])?;
-                    v[1] = add(v[1], placement.origin[1])?;
+                    v[0] = add(v[0], placement.origin[0], path, numerics)?;
+                    v[1] = add(v[1], placement.origin[1], path, numerics)?;
                 }
                 placement.origin[0] = 0.0;
                 placement.origin[1] = 0.0;
@@ -154,19 +208,19 @@ fn canonical(mut kind: IfccadEntityKind, offset: [f64; 3]) -> Prepared<IfccadEnt
             }
         }
         IfccadEntityKind::Solid(q) | IfccadEntityKind::Trace(q) => {
-            frame(&mut q.placement, offset)?;
+            frame(&mut q.placement, offset, path, numerics)?;
             finite(q.thickness)?;
             if q.placement.x_axis == [1., 0., 0.] && q.placement.y_axis == [0., 1., 0.] {
                 for v in &mut q.corners {
-                    v[0] = add(v[0], q.placement.origin[0])?;
-                    v[1] = add(v[1], q.placement.origin[1])?;
+                    v[0] = add(v[0], q.placement.origin[0], path, numerics)?;
+                    v[1] = add(v[1], q.placement.origin[1], path, numerics)?;
                 }
                 q.placement.origin[0] = 0.;
                 q.placement.origin[1] = 0.;
             }
         }
         IfccadEntityKind::Text(t) => {
-            frame(&mut t.placement, offset)?;
+            frame(&mut t.placement, offset, path, numerics)?;
             if matches!(
                 t.layout,
                 TextLayout::Aligned { .. } | TextLayout::Fit { .. }
@@ -177,13 +231,13 @@ fn canonical(mut kind: IfccadEntityKind, offset: [f64; 3]) -> Prepared<IfccadEnt
             }
         }
         IfccadEntityKind::MText(t) => {
-            frame(&mut t.placement, offset)?;
+            frame(&mut t.placement, offset, path, numerics)?;
             if t.wrap_width == Some(0.) {
                 t.wrap_width = None;
             }
         }
         IfccadEntityKind::BlockInstance { transform, .. } => {
-            frame(&mut transform.placement, offset)?;
+            frame(&mut transform.placement, offset, path, numerics)?;
             finite(transform.rotation)?;
             for v in transform.scale {
                 finite(v)?;
@@ -341,6 +395,7 @@ fn width_loss(kind: &IfccadEntityKind) -> Option<&'static str> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn native_entity(
     kind: IfccadEntityKind,
     appearance: &IfccadEntityAppearance,
@@ -349,8 +404,10 @@ fn native_entity(
     scale: f64,
     back: &mut Writer<'_>,
     names: &Names,
+    path: &str,
+    numerics: &mut PictureNumerics,
 ) -> Prepared<EntityType> {
-    let expected = canonical(kind, [0.; 3])?;
+    let expected = canonical(kind, [0.; 3], path, numerics)?;
     let mut losses = Losses::default();
     let mut entity = entity_in(&expected, names, &mut losses)
         .ok_or_else(|| unsupported("unsupported picture part or resource"))?;
@@ -360,21 +417,26 @@ fn native_entity(
     common.linetype_scale = scale;
     appearance_in(appearance, names, common, &mut losses);
     let round_appearance = appearance_out(common, &back.line_patterns, &mut losses);
-    let before = back.losses.0.clone();
+    let before = back.losses.content_snapshot();
     let actual = back
         .kind(&entity)?
         .ok_or_else(|| unsupported("part cannot be recaptured"))?;
-    if !losses.0.is_empty() || before != back.losses.0 || round_appearance != *appearance {
+    if losses.has_content_loss()
+        || before != back.losses.content_snapshot()
+        || round_appearance != *appearance
+    {
         return Err(unsupported("part appearance or content would change"));
     }
-    if !geometry::native(&canonical(actual, [0.; 3])?, &expected) {
-        return Err(unsupported(
-            "part parameters exceed the qualified inverse mapping",
-        ));
-    }
+    semantics::native(
+        &canonical(actual, [0.; 3], path, numerics)?,
+        &expected,
+        path,
+        numerics,
+    )?;
     Ok(entity)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn native_block(
     id: u64,
     source: &IfccadDocument,
@@ -383,6 +445,8 @@ fn native_block(
     active: &mut BTreeSet<u64>,
     done: &mut BTreeSet<u64>,
     metadata: &mut Vec<String>,
+    path: &str,
+    numerics: &mut PictureNumerics,
 ) -> Prepared<()> {
     if done.contains(&id) {
         return Ok(());
@@ -399,8 +463,19 @@ fn native_block(
         let e = e
             .as_native()
             .ok_or_else(|| unsupported("opaque picture marker member"))?;
+        let member_path = format!("{path}/marker {id}/member {}", e.id);
         if let IfccadEntityKind::BlockInstance { definition_id, .. } = &e.kind {
-            native_block(*definition_id, source, back, names, active, done, metadata)?;
+            native_block(
+                *definition_id,
+                source,
+                back,
+                names,
+                active,
+                done,
+                metadata,
+                &member_path,
+                numerics,
+            )?;
         }
         if let Some(reason) = width_loss(&e.kind) {
             metadata.push(format!("graphics marker {id} member {}: {reason}", e.id));
@@ -417,6 +492,8 @@ fn native_block(
             e.line_pattern_scale,
             back,
             names,
+            &member_path,
+            numerics,
         )?;
     }
     active.remove(&id);
@@ -439,9 +516,10 @@ pub(super) fn import(
         return Ok(None);
     };
     let mut metadata = Vec::new();
+    let mut numerics = PictureNumerics::default();
     let mut prepare = || -> Prepared<Vec<EntityType>> {
         let mut placement = source.placement.clone();
-        frame(&mut placement, [0.; 3])?;
+        frame(&mut placement, [0.; 3], "dimension", &mut numerics)?;
         if placement_in(&placement).1 != Vector3::new(0., 0., 1.) {
             return Err(unsupported(
                 "picture dimension plane is outside the qualified +Z profile",
@@ -459,6 +537,7 @@ pub(super) fn import(
         let mut parts = vec![];
         let mut done = BTreeSet::new();
         for (index, p) in graphics.parts.iter().enumerate() {
+            let path = format!("p{index}");
             let layer = match p.layer_id {
                 Some(id) => names
                     .layers
@@ -501,9 +580,11 @@ pub(super) fn import(
                     &mut BTreeSet::new(),
                     &mut done,
                     &mut metadata,
+                    &path,
+                    &mut numerics,
                 )?;
             }
-            let kind = geometry::transform(original, &placement, false)?;
+            let kind = geometry::transform(original, &placement, false, &path, &mut numerics)?;
             parts.push(native_entity(
                 kind,
                 &p.appearance,
@@ -512,6 +593,8 @@ pub(super) fn import(
                 p.line_pattern_scale,
                 &mut back,
                 names,
+                &path,
+                &mut numerics,
             )?);
         }
         Ok(parts)
@@ -560,6 +643,9 @@ pub(super) fn import(
     }
     if graphics.origin == Origin::Generated {
         losses.note(format!("dimension {id} graphics provenance (Generated)"));
+    }
+    if let Some(note) = numerics.summary(&format!("dimension {id}"), None) {
+        losses.retained_note(note);
     }
     Ok(Some(name))
 }
@@ -860,19 +946,21 @@ fn cad_part(
     placement: &IfccadPlacement,
     active: &mut BTreeSet<String>,
     done: &mut BTreeSet<String>,
+    path: &str,
+    numerics: &mut PictureNumerics,
 ) -> Prepared<Part> {
     common_supported(entity.common())?;
     if let EntityType::Insert(insert) = entity {
-        cad_block(w, &insert.block_name, active, done)?;
+        cad_block(w, &insert.block_name, active, done, path, numerics)?;
     }
-    let before = w.losses.0.clone();
+    let before = w.losses.content_snapshot();
     let native = w
         .kind(entity)?
         .ok_or_else(|| unsupported("unsupported picture member"))?;
-    if w.losses.0 != before {
+    if w.losses.content_snapshot() != before {
         return Err(unsupported("picture member conversion loses content"));
     }
-    let kind = geometry::transform(native, placement, true)?;
+    let kind = geometry::transform(native, placement, true, path, numerics)?;
     let common = entity.common();
     let layer = *w
         .layers
@@ -880,7 +968,7 @@ fn cad_part(
         .ok_or_else(|| invalid("missing CAD picture layer"))?;
     let appearance = appearance_out(common, &w.line_patterns, &mut w.losses);
     let lookup = names(w);
-    let owner_kind = geometry::transform(kind.clone(), placement, false)?;
+    let owner_kind = geometry::transform(kind.clone(), placement, false, path, numerics)?;
     let mut issues = Losses::default();
     let mut back = entity_in(&owner_kind, &lookup, &mut issues)
         .ok_or_else(|| unsupported("picture part cannot be reconstructed"))?;
@@ -904,7 +992,10 @@ fn cad_part(
     {
         actual_common.linetype = common.linetype.clone();
     }
-    if actual_common != *common || !issues.0.is_empty() || before != w.losses.0 {
+    if actual_common != *common
+        || issues.has_content_loss()
+        || before != w.losses.content_snapshot()
+    {
         return Err(unsupported("picture member appearance cannot be retained"));
     }
     *back.common_mut() = common.clone();
@@ -942,11 +1033,7 @@ fn cad_part(
         }
         _ => {}
     }
-    if !geometry::cad(&back, entity) {
-        return Err(unsupported(
-            "CAD picture parameters exceed the qualified inverse mapping",
-        ));
-    }
+    semantics::cad(&back, entity, path, numerics)?;
     for record in common.extended_data.records() {
         w.losses.note(format!(
             "picture member {} XDATA application {} omitted",
@@ -1005,6 +1092,8 @@ fn cad_block(
     name: &str,
     active: &mut BTreeSet<String>,
     done: &mut BTreeSet<String>,
+    path: &str,
+    numerics: &mut PictureNumerics,
 ) -> Prepared<()> {
     let key = name.to_ascii_lowercase();
     if done.contains(&key) {
@@ -1024,6 +1113,7 @@ fn cad_block(
     record_metadata(w.document, record, true)?;
     let entities: Vec<_> = w.document.entities_in_block(name).cloned().collect();
     for e in entities {
+        let member_path = format!("{path}/marker {name}/member {}", e.common().handle);
         cad_part(
             w,
             &e,
@@ -1034,6 +1124,8 @@ fn cad_block(
             },
             active,
             done,
+            &member_path,
+            numerics,
         )?;
     }
     active.remove(&key);
@@ -1051,6 +1143,7 @@ pub(super) fn capture(
         return Ok(None);
     }
     let mut staged = stage(w);
+    let mut numerics = PictureNumerics::default();
     let mut prepare = || -> Prepared<Vec<Part>> {
         let record = staged
             .document
@@ -1061,7 +1154,7 @@ pub(super) fn capture(
             return Err(invalid("Dimension picture links a layout block"));
         }
         let mut p = placement.clone();
-        frame(&mut p, [0.; 3])?;
+        frame(&mut p, [0.; 3], "dimension", &mut numerics)?;
         if base.normal != Vector3::new(0., 0., 1.)
             || base.insertion_point != Vector3::new(0., 0., 0.)
             || base.insertion_scale != Vector3::new(1., 1., 1.)
@@ -1088,24 +1181,22 @@ pub(super) fn capture(
         )?;
         record_metadata(staged.document, record, false)?;
         for (index, e) in entities.into_iter().enumerate() {
-            let losses_before = staged.losses.0.clone();
-            match cad_part(&mut staged, &e, &p, &mut active, &mut done) {
+            let losses_before = staged.losses.content_snapshot();
+            match cad_part(
+                &mut staged,
+                &e,
+                &p,
+                &mut active,
+                &mut done,
+                &format!("p{index}"),
+                &mut numerics,
+            ) {
                 Ok(part) => {
                     parts.push(part);
-                    let notes: Vec<_> = staged
-                        .losses
-                        .0
-                        .keys()
-                        .filter(|k| !losses_before.contains_key(*k))
-                        .cloned()
-                        .collect();
-                    for note in notes {
-                        let count = staged.losses.0.remove(&note).unwrap();
-                        staged.losses.0.insert(
-                            format!("dimension {} graphics p{index}: {note}", base.common.handle),
-                            count,
-                        );
-                    }
+                    staged.losses.locate_new_content(
+                        &losses_before,
+                        &format!("dimension {} graphics p{index}", base.common.handle),
+                    );
                 }
                 Err(Problem::Unsupported(reason)) => {
                     return Err(Problem::Unsupported(format!("p{index}: {reason}")))
@@ -1119,7 +1210,13 @@ pub(super) fn capture(
     // its reason; the drawing around it still saves.
     let reason = match prepare() {
         Ok(parts) => {
-            w.losses.0.extend(staged.losses.0);
+            if let Some(note) = numerics.summary(
+                &format!("dimension {}", base.common.handle),
+                Some(base.common.handle),
+            ) {
+                staged.losses.retained_note(note);
+            }
+            w.losses.merge(staged.losses);
             w.drawing.blocks.extend(staged.drawing.blocks);
             w.blocks = staged.blocks;
             w.drawing.id_counters = staged.drawing.id_counters;

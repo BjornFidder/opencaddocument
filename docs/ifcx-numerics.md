@@ -27,14 +27,27 @@ representable signed and nonuniform scales pass through exactly. This check
 also participates in the existing atomic dimension-picture preparation: an
 unrepresentable marker omits the whole picture and retains the definition.
 
-## Scope of this change
+## Conversion policy
 
-The remaining frame-angle quantization and derived-length settling in the
-converter still exist. Dimension pictures still use their existing bounded
-planar qualification, inverse checks and whole-picture omission policy. See
-[stored dimension graphics](ifcx-dimension-graphics.md). A +Z dimension inside
-an obliquely placed ordinary block is covered here; a dimension whose own plane
-is tilted does not gain new picture support.
+The IFCX mapping no longer calls `snap`, `settle` or `Placement::snapped`.
+Required binary64 calculations for frames, ellipse axes, text lengths, MText
+spacing/oblique units, Hatch pattern factoring/sweeps and plot units pass their
+results directly to the destination. Discrete colour and line-weight encoding,
+angle periodicity and stored user snap settings keep their existing meaning.
+Only exactly coincident Hatch arc ends mean a full turn; tiny nonzero sweeps
+remain partial arcs.
+
+Dimension pictures follow the same finite arithmetic policy. Their frames use
+shared `IfccadPlacement::coordinate_frame()` validity and the original validated
+axes. A separate absolute residual/extent budget is not an acceptance condition.
+Valid finite results, including collapsed lines accepted by ordinary geometry,
+can be retained. Invalid output and unsupported content still omit the whole
+picture. See [stored dimension graphics](ifcx-dimension-graphics.md).
+
+This removes avoidable quantization, not the rounding inherent in binary64.
+It introduces no runtime accuracy guarantee or general overflow repair. A +Z
+local dimension can live inside an obliquely placed ordinary block; the picture
+profile does not gain tilted dimension planes or new entity families.
 
 ## Regression evidence and limits
 
@@ -57,15 +70,19 @@ coordinates. Model and paper occurrences share one block definition.
 World observations include line endpoints, full-circle affine conics, arc
 coefficients and sweep, dimension reference/line points, and an ordered picture
 with a line, circle, point and signed nonuniform marker with a nonzero base.
-The unit cases use the four-part picture in centimetres; the other units start
-without a picture, keeping fractional marker inverse qualification outside this
-placement change. The remaining spatial cases include the picture.
+All four physically equivalent unit cases contain the picture, including
+fractional marker coordinates. Three additional wide cases have eleven ordered
+parts: the original four plus Arc, Ellipse, bulged planar polyline, spatial
+polyline, Solid, Text and MText. They include ordinary counterparts with the same
+geometry and an unbraced MText source. World checks include curve interiors and
+text anchors, direction and height; they do not evaluate glyph outlines.
 The parent block transform is applied once to the definition and once to the
 picture geometry. Picture attachment, part order, appearance and style binding
 are also checked. Matching is by scope and kind; missing or ambiguous content
 fails. Transport checks use actual ASCII DXF, binary DXF and AC1032 DWG writers
-and readers for the AA and nested-centimetre cases, plus shared model/paper
-ownership. This is a focused correctness suite, not a practice-file benchmark.
+and readers for AA, nested, and wide/MText cases, plus shared model/paper
+ownership. Reader statistics must show completed streams without skipped records
+or recovered errors. This is a focused correctness suite, not a practice-file benchmark.
 
 `tests/fixtures/numerics-3d-cases.json` freezes the binary64 inputs.
 `scripts/generate_numerics_3d_reference.py` evaluates them using standard-library

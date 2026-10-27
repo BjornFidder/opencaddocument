@@ -19,48 +19,65 @@ read or write. This is a picture conversion boundary, not an
 audit of every unsupported CAD entity or arbitrary object in a Document.
 
 The dimension plane remains +Z, with default picture clone state and a zero
-picture-block base point. Rigid local/owner preparation also handles in-plane
-dimension rotations and qualified orthonormal member frames. Each translation
-or matrix evaluation has a hard absolute budget of **1e-7 drawing units**;
-this is not a physical-unit or origin-relative tolerance. TwoSum and FMA product
-residuals bound arithmetic independently of the inverse check: exact inverse
-cancellation is insufficient evidence. Nonfinite results, excessive error and
-non-orthonormal frames still omit the complete picture.
+picture-block base point. Rigid local/owner preparation uses shared frame
+validation and the original axes; no separate absolute accuracy, reach/extent
+or inverse-residual gate is imposed on pictures. Finite valid arithmetic follows
+the corresponding ordinary primitive policy. Nonfinite/invalid output and
+unsupported semantic state still omit the complete picture.
 
-The inverse checks are typed. Listed coordinate fields may round within that
-budget; axis changes are limited to **1e-12** and their effect at the primitive
-radius, corners or stored text layout metrics must also fit the position budget.
-Rounded frame arithmetic for paths, Text or marker closures without an extent
-qualification remains unsupported. All other state stays exact after explicit
-equivalent-representation factoring. Some equivalent frames can consequently
-still be conservatively refused. These checks do not certify text glyph contours
-or every later block occurrence transform. Tilted dimension planes and nondefault
-picture clone transforms remain outside the profile in both directions.
+A +Z dimension inside an obliquely placed ordinary block is supported: the
+occurrence applies to its definition and attached picture together. A tilted
+dimension's own plane and nondefault clone/root-base transforms stay outside the
+profile. See [conversion numerics](ifcx-numerics.md).
 
-A +Z dimension may itself live inside an obliquely placed ordinary block. The
-ordinary occurrence transform applies to the definition and its attached picture
-together; this does not require a tilted dimension plane. The placement regression
-suite covers that distinction through actual DWG and both DXF transports. INSERT
-scales replaced by the CAD setters are diagnosed rather than silently changed;
-see [placement numerics](ifcx-numerics.md).
+The inverse comparison is a closed typed semantic check. Only enumerated derived
+fields (transformed positions/frames, required curve/angle/spacing derivations)
+may differ. Kind, full/partial arc meaning and direction, direct radii/scales,
+ordered topology, bulges, effective widths, text, style/layer bindings and other
+non-derived state remain protected. It is not a generic float mask or an accuracy
+certificate. Missing/ambiguous groups fail the independent world regression tests.
+
+MText comparison folds native inheritance directly and compares complete typed
+paragraph/run/stack content. CAD spelling uses a checked mode of the same markup
+parser: equivalent braces/default formatting qualify; unknown unescaped controls
+and malformed/uncovered parameters do not prove equivalence. The ordinary parser
+remains lenient. Native fields that cannot be emitted, such as unsupported
+paragraph formatting, cannot disappear through an emitter/parser normalization.
+Oblique-angle unit conversion may change its numeric value while preserving
+presence and every other formatting field. Entity spacing/columns/layout stay
+separate. No glyph contour or host rendering equivalence is certified.
 
 | Part family | Coverage within that profile |
 | --- | --- |
-| Line, display Point | Bounded coordinates and representable appearance |
-| Circle, Arc, Ellipse, EllipseArc | Typed inverse qualification; bounded eligible frame differences |
-| Planar polyline | Bulges and effective widths; translations factored into vertices |
-| Spatial polyline | Exact vertices and retained appearance |
-| Solid, Trace | Exact corners, placement and thickness |
-| Text | Representable runs/layout; fitted and aligned Text excluded |
-| MText | Representable runs, layout and wrapping; qualified rotated directions and bounded line-spacing conversion |
-| Marker block instance | Complete qualified closure; shared definitions retained |
-| Hatch, other kinds, unqualified frames or numerical residuals | Whole-picture loss |
+| Line, display Point | Finite valid coordinates and representable appearance |
+| Circle, Arc, Ellipse, EllipseArc | Derived frame/parameter arithmetic; direct radii and discrete curve meaning protected |
+| Planar polyline | Ordered vertices, bulges and effective widths; eligible origins factored into vertices |
+| Spatial polyline | Ordered vertices, closure/generation and retained appearance |
+| Solid, Trace | Ordered corner slots, derived placement and direct thickness |
+| Text | Effective runs/decorations and layout; fitted and aligned Text excluded |
+| MText | Effective typed content, styles, layout, wrapping, direction and spacing |
+| Marker block instance | Complete qualified closure; shared definitions and direct signed scales retained |
+| Hatch, other kinds or unsupported semantic state | Whole-picture loss |
 
-An otherwise familiar family can still fail the inverse qualification, for
-example because of text normalization, angular snapping or coordinate rounding.
 Unsupported visual CAD common state, root/marker record metadata, external block
-references and external SORTENTSTABLE draw order are also outside this profile.
-Explicit part order is retained; an alternate external draw order is not guessed.
+references and external SORTENTSTABLE draw order remain outside the profile.
+Explicit part order is retained; alternate external draw order is not guessed.
+
+## Numerical observations
+
+Each successfully retained picture may produce one diagnostic containing
+`graphics retained with numerical rounding`, the first part/marker path and
+observed categories (position, direction, derived length/angle or spacing).
+It is emitted only for an observed arithmetic residual or a changed listed
+derived value. Trigonometry alone does not trigger it; an unchanged identity
+produces no numeric note. The diagnostic claims no tolerance or maximum error.
+
+`Vec<Loss>` therefore also carries explicitly identified retention observations.
+A nonempty list does not imply an omitted picture. Content-loss gates use a
+separate internal store; retained notes cannot cause omission. Resources and notes
+are staged together: a later failure publishes the omission reason and no
+retained-rounding note or partial picture resource. Existing content-loss strings
+and provenance/cache metadata reports keep their meaning.
 
 ## Presence and metadata
 
@@ -107,7 +124,13 @@ Tests exercise both directions, complete resource closures, absence/empty states
 scope placement, helper/layer binding, width metadata and atomic failure. Selected
 composite pictures also pass actual ASCII DXF, binary DXF and AC1032 DWG output
 and production readback before strict IFCX validation. This does not establish
-coverage for every DWG version or every host renderer. A local private construction
+coverage for every DWG version or every host renderer. The numerical regression
+suite checks 47 frozen spatial cases, including 11-part pictures beside equivalent
+ordinary geometry, physically equivalent units, and source/first/third-cycle
+world observations. These checks are independent of production placement math;
+they do not certify arbitrary drawings or glyph contours.
+
+Separate earlier coverage used a local private construction
 drawing retains 87 native dimension pictures and 698 ordered members through
 both original DXF/DWG inputs and real DXF/DWG readback. Independent ordered
 numeric comparison checks coordinates, text directions/layout, appearance and

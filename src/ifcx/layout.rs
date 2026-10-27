@@ -1120,8 +1120,8 @@ fn settings_in(layout: &mut Layout, settings: &IfccadLayoutSettings, losses: &mu
         losses.note(format!("the sheet of layout {}", layout.name));
         return;
     };
-    layout.paper_width = settle(media.width * to_mm);
-    layout.paper_height = settle(media.height * to_mm);
+    layout.paper_width = media.width * to_mm;
+    layout.paper_height = media.height * to_mm;
     if let Some(plot) = &settings.plot_settings {
         plot_in(layout, media.width, media.height, to_mm, plot);
     }
@@ -1157,8 +1157,8 @@ fn plot_out(layout: &Layout, media: &LayoutMedia, model: bool) -> Option<PlotSet
         true => PlotPlacement::Centered,
         false => PlotPlacement::Offset {
             reference: PlotOffsetReference::Media,
-            x: settle(layout.plot_origin_x / output_mm),
-            y: settle(layout.plot_origin_y / output_mm),
+            x: layout.plot_origin_x / output_mm,
+            y: layout.plot_origin_y / output_mm,
         },
     };
     let quality = match layout.shade_plot_resolution {
@@ -1177,8 +1177,8 @@ fn plot_out(layout: &Layout, media: &LayoutMedia, model: bool) -> Option<PlotSet
             printable_area: rect(
                 layout.plot_margin_left,
                 layout.plot_margin_bottom,
-                settle(media.width - layout.plot_margin_right),
-                settle(media.height - layout.plot_margin_top),
+                media.width - layout.plot_margin_right,
+                media.height - layout.plot_margin_top,
             )?,
             rotation: match layout.plot_rotation {
                 1 => PlotRotation::CounterClockwise90,

@@ -936,7 +936,6 @@ pub(super) fn dimension_in(
 ) -> Option<EntityType> {
     let (style_name, base_settings, kinds) = names.dim_styles.get(&source.style_id)?;
     let (origin, normal, frame) = placement_in(&source.placement);
-    let frame = snap(frame, ANGLE_STEP);
     let (sin, cos) = frame.sin_cos();
     // Frame coordinates to the OCS of the normal, then to the world.
     let ocs = |[u, v, w]: [f64; 3]| {

@@ -6,7 +6,9 @@ use crate::{Document, DwgReader, DxfReader};
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
-/// Something a conversion could not carry over.
+/// A conversion diagnostic: omitted content or an explicitly identified
+/// retained-picture numerical observation. Read `message` for the outcome;
+/// a nonempty diagnostic list does not necessarily mean a picture was omitted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Loss {
     /// The object it concerns, when there is one.
@@ -15,7 +17,7 @@ pub struct Loss {
 }
 
 /// The contract every format converter implements: read a file into a
-/// [`Document`] and write a document back, reporting what was lost either way.
+/// [`Document`] and write a document back, reporting conversion diagnostics.
 pub trait Format {
     /// Short name, such as `"DWG"`.
     fn name(&self) -> &str;
