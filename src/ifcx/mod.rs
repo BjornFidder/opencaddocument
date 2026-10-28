@@ -34,6 +34,7 @@ use crate::{Document, Error, Format, Loss, Placement};
 
 mod dimension;
 mod dimension_graphics;
+mod dimension_kinds;
 mod hatch;
 mod layout;
 mod tables;
@@ -55,7 +56,7 @@ const TEMPLATE: &str = r#"{
     "author": "OpenCAD",
     "timestamp": "1970-01-01T00:00:00Z"
   },
-  "imports": [{ "uri": "urn:example:ifccad:0.1.0" }],
+  "imports": [{ "uri": "urn:example:ifccad:0.2.0" }],
   "schemas": {},
   "data": [
     {
@@ -73,7 +74,7 @@ const TEMPLATE: &str = r#"{
           "nextLayoutId": 2,
           "nextLinePatternId": 1,
           "nextSymbolSourceId": 1,
-          "profileVersion": "0.1.0",
+          "profileVersion": "0.2.0",
           "nextUcsId": 1,
           "nextModelWindowId": 1
         }
@@ -298,7 +299,7 @@ impl Ifcx {
             }
         }
         layout::finish(drawing, &mut document, &names, &papers, &handles)?;
-        dimension::associations_in(drawing, &mut document, &handles);
+        dimension::associations_in(drawing, &mut document, &handles, &mut losses);
         Ok(IfccadImportOutcome {
             document,
             losses: losses.into_vec(),
@@ -396,7 +397,12 @@ impl Ifcx {
             .map(|paper| &mut paper.entities);
         for entities in scopes.chain(papers).chain([&mut drawing.model.entities]) {
             link_hatches(entities, ids, sources);
-            dimension::link_associations(entities, ids, &writer.dimension_sources);
+            dimension::link_associations(
+                entities,
+                ids,
+                &writer.dimension_sources,
+                &mut writer.losses,
+            );
         }
 
         ifccad::validate_ifccad_document(&writer.drawing)?;
@@ -477,7 +483,9 @@ fn add_in(
         return Ok(None);
     };
     let converted = match &entity.kind {
-        IfccadEntityKind::Dimension(source) => dimension::dimension_in(source, document, names),
+        IfccadEntityKind::Dimension(source) => {
+            dimension::dimension_in(source, document, names, losses)
+        }
         kind => entity_in(kind, names, losses),
     };
     let Some(mut converted) = converted else {

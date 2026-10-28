@@ -25,14 +25,16 @@ With the `ifcx` feature, the `Ifcx` format reads and writes IFCX through
   display, block definitions, paper layouts with their sheet and plot
   settings, viewports, model windows and the workspace state, and lines,
   circles, arcs, ellipses, points, 2D and 3D polylines, solids, traces,
-  texts, MText, hatches, linear and aligned dimensions and block inserts.
+  texts, MText, hatches, all nine ordinary dimension kinds and block inserts.
+  The development Dimension expansion uses IFCCAD profile 0.2.0/CBOR2; see
+  [qualified kinds and limitations](docs/ifcx-dimension-kinds.md).
 - Stored dimension graphics transfer in both directions using native CAD
   picture blocks within a supported planar profile. Unsupported pictures are
   omitted as a whole with a loss report; the supported definition is retained
   independently. Retained numerical observations are explicitly identified in the
   diagnostic list. No graphics are regenerated. See the
   [picture coverage and preservation limits](docs/ifcx-dimension-graphics.md).
-- What IFCX has no place for is reported as a loss: other dimension kinds,
+- What IFCX has no place for is reported as a loss: unsupported dimension state,
   splines, 3D solids and the like, raster sheets, attributes.
 - An IFCX file's identity (header id, drawing id) rides on custom document
   properties, so a drawing read from IFCX is written back as the same drawing.
