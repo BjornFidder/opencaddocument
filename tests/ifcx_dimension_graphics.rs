@@ -69,6 +69,10 @@ fn definition_geometry(dimension: &IfccadDimension) -> ([Point3; 3], Option<f64>
             extension_direction_angle,
             ..
         } => (dimension_line_point, None, extension_direction_angle),
+        ref other => panic!(
+            "linear/aligned regression fixture unexpectedly contains {:?}",
+            other.kind()
+        ),
     };
     let (first, second) = dimension.definition.reference_points();
     let frame = dimension.placement.coordinate_frame().unwrap();

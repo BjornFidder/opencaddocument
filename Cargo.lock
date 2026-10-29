@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "acadrust"
 version = "0.6.8"
-source = "git+https://github.com/HakanSeven12/acadrust.git?rev=333b677#333b67761783792defe6c367aad981b4d7cced9d"
+source = "git+https://github.com/HakanSeven12/acadrust.git?rev=75dd8f5#75dd8f5cd3b5dd2c56d9c9d4e8c14b816d31d68d"
 dependencies = [
  "anyhow",
  "bitflags",
@@ -442,8 +442,8 @@ dependencies = [
 
 [[package]]
 name = "ifccad"
-version = "0.1.0"
-source = "git+https://github.com/OpenAEC-Foundation/ifccad.git?rev=14e6562#14e656204498864f3846406a8002aed296a123d5"
+version = "2026.44.0"
+source = "git+https://github.com/OpenAEC-Foundation/ifccad.git?rev=bce9da06a8e1684e86e35f0302e3870141e6f9f9#bce9da06a8e1684e86e35f0302e3870141e6f9f9"
 dependencies = [
  "base64",
  "fpmath",

@@ -1,17 +1,16 @@
-//! Dimensions: dimension styles, linear and aligned dimensions with their
+//! Dimensions: dimension styles and all nine ordinary definitions with their
 //! own style overrides (the `ACAD`/`DSTYLE` extended data) and point
 //! associations.
 //!
 //! The style mapping follows the cad-dimension crate of ifccad (MPL-2.0). IFCX
-//! defines linear and aligned dimensions only; other kinds stay losses. Stored
+//! defines independent measurement and presentation values. Unsupported CAD
+//! intervals, projected reference state and source selections stay losses. Stored
 //! pictures are mapped independently by `dimension_graphics`; this module does
 //! not regenerate them or infer their freshness from the definition.
 
 use std::collections::BTreeMap;
 
-use acadrust::entities::{
-    AttachmentPointType, Dimension, DimensionAligned, DimensionLinear, DimensionType,
-};
+use acadrust::entities::{AttachmentPointType, Dimension, DimensionAligned, DimensionLinear};
 use acadrust::objects::{
     AssocDimensionAssociation, AssocDimensionReference, AssociativeData, AssociativeObject,
     ObjectType,
@@ -123,6 +122,29 @@ fn with_overrides(style: &DimStyle, common: &EntityCommon) -> DimStyle {
         }
     }
     style
+}
+
+fn has_normalized_override_presence(
+    style: &DimStyle,
+    effective: &DimStyle,
+    common: &EntityCommon,
+) -> bool {
+    let Some(record) = common.extended_data.get_record("ACAD") else {
+        return false;
+    };
+    if !matches!(record.values.first(),Some(XDataValue::String(name)) if name=="DSTYLE") {
+        return false;
+    }
+    let mut values = record.values[1..].iter();
+    while let Some(value) = values.next() {
+        if let (XDataValue::Integer16(code), Some(_)) = (value, values.clone().next()) {
+            if !CODES.contains(code) || variable(style, *code) == variable(effective, *code) {
+                return true;
+            }
+            values.next();
+        }
+    }
+    false
 }
 
 /// The overrides that turn `base` into `effective`, as a `DSTYLE` record.
@@ -822,7 +844,23 @@ pub(super) fn dimension_out(
             None,
             d.ext_line_rotation,
         ),
-        _ => return None,
+        Dimension::Angular2Ln(d) => (Vector3::ZERO, Vector3::ZERO, d.dimension_arc, None, 0.),
+        Dimension::Ordinate(d) => (Vector3::ZERO, Vector3::ZERO, d.leader_endpoint, None, 0.),
+        Dimension::LargeRadial(d) => (Vector3::ZERO, Vector3::ZERO, d.override_center, None, 0.),
+        Dimension::Radius(_) | Dimension::Diameter(_) if base.text_user_positioned => (
+            Vector3::ZERO,
+            Vector3::ZERO,
+            ocs_to_world(base.text_middle_point, base.normal),
+            None,
+            0.,
+        ),
+        _ => (
+            Vector3::ZERO,
+            Vector3::ZERO,
+            dimension.definition_point(),
+            None,
+            0.0,
+        ),
     };
     let key = base.style_name.to_ascii_lowercase();
     let key = match writer.dim_styles.contains_key(&key) {
@@ -838,29 +876,50 @@ pub(super) fn dimension_out(
 
     let normal = base.normal;
     let origin = to_ocs(line, normal);
+    if !matches!(dimension, Dimension::Linear(_) | Dimension::Aligned(_))
+        && base.text_user_positioned
+        && base.text_middle_point.z != origin.z
+    {
+        writer
+            .losses
+            .note("dimension text lies outside its representable presentation plane");
+        return None;
+    }
     let local = |point: Vector3| {
         let p = to_ocs(point, normal);
         [p.x - origin.x, p.y - origin.y, p.z - origin.z]
     };
-    let definition = match rotation {
-        Some(angle) => DimensionDefinition::Linear {
-            first_point: local(first),
-            second_point: local(second),
-            direction_angle: angle,
-            dimension_line_point: [0.0, 0.0],
-            extension_direction_angle: (oblique != 0.0).then_some(angle + oblique),
-        },
-        None => {
-            if oblique != 0.0 {
+    let definition = if !matches!(dimension, Dimension::Linear(_) | Dimension::Aligned(_)) {
+        match super::dimension_kinds::from_cad(dimension, &local) {
+            Some(v) => v,
+            None => {
                 writer
                     .losses
-                    .note("oblique extension lines of aligned dimensions");
+                    .note("unsupported dimension interval, sector or spatial reference state");
+                return None;
             }
-            DimensionDefinition::Aligned {
+        }
+    } else {
+        match rotation {
+            Some(angle) => DimensionDefinition::Linear {
                 first_point: local(first),
                 second_point: local(second),
+                direction_angle: angle,
                 dimension_line_point: [0.0, 0.0],
-                extension_direction_angle: None,
+                extension_direction_angle: (oblique != 0.0).then_some(angle + oblique),
+            },
+            None => {
+                if oblique != 0.0 {
+                    writer
+                        .losses
+                        .note("oblique extension lines of aligned dimensions");
+                }
+                DimensionDefinition::Aligned {
+                    first_point: local(first),
+                    second_point: local(second),
+                    dimension_line_point: [0.0, 0.0],
+                    extension_direction_angle: None,
+                }
             }
         }
     };
@@ -883,6 +942,15 @@ pub(super) fn dimension_out(
     // Own overrides: the style's settings against those with the DSTYLE
     // record applied, plus what CAD keeps on the entity.
     let effective_style = with_overrides(style, &base.common);
+    if !matches!(
+        definition,
+        DimensionDefinition::Linear { .. } | DimensionDefinition::Aligned { .. }
+    ) && has_normalized_override_presence(style, &effective_style, &base.common)
+    {
+        writer
+            .losses
+            .note("dimension authored override presence normalized; effective values retained");
+    }
     let mut effective = match overrides_record(style, &effective_style) {
         None => base_settings.clone(),
         Some(_) => {
@@ -907,11 +975,7 @@ pub(super) fn dimension_out(
     if base.horizontal_direction != 0.0 {
         writer.losses.note("dimension text direction");
     }
-    if base.dimension_type != DimensionType::Linear && base.dimension_type != DimensionType::Aligned
-    {
-        return None;
-    }
-    let associations = associations_out(document, base.common.handle);
+    let associations = associations_out(document, dimension, &mut writer.losses);
     if !associations.is_empty() {
         writer
             .dimension_sources
@@ -933,6 +997,7 @@ pub(super) fn dimension_in(
     source: &IfccadDimension,
     document: &Document,
     names: &Names,
+    losses: &mut Losses,
 ) -> Option<EntityType> {
     let (style_name, base_settings, kinds) = names.dim_styles.get(&source.style_id)?;
     let (origin, normal, frame) = placement_in(&source.placement);
@@ -946,7 +1011,6 @@ pub(super) fn dimension_in(
         )
     };
     let world = |p: [f64; 3]| ocs_to_world(ocs(p), normal);
-    let (first, second) = source.definition.reference_points();
     let (line, _) = match &source.definition {
         DimensionDefinition::Linear {
             dimension_line_point,
@@ -958,35 +1022,56 @@ pub(super) fn dimension_in(
             extension_direction_angle,
             ..
         } => (*dimension_line_point, *extension_direction_angle),
+        _ => ([0.0, 0.0], None),
     };
     let line = world([line[0], line[1], 0.0]);
     let mut dimension = match &source.definition {
         DimensionDefinition::Linear {
+            first_point,
+            second_point,
             direction_angle,
             extension_direction_angle,
             ..
         } => {
-            let mut d = DimensionLinear::new(world(first), world(second));
+            let mut d = DimensionLinear::new(world(*first_point), world(*second_point));
             d.definition_point = line;
             d.rotation = direction_angle + frame;
             d.ext_line_rotation =
                 extension_direction_angle.map_or(0.0, |angle| angle - direction_angle);
             Dimension::Linear(d)
         }
-        DimensionDefinition::Aligned { .. } => {
-            let mut d = DimensionAligned::new(world(first), world(second));
+        DimensionDefinition::Aligned {
+            first_point,
+            second_point,
+            ..
+        } => {
+            let mut d = DimensionAligned::new(world(*first_point), world(*second_point));
             d.definition_point = line;
             Dimension::Aligned(d)
         }
+        _ => super::dimension_kinds::into_cad(&source.definition, &world, frame)?,
     };
     let kind = source.definition.kind();
     let effective = resolve_dimension_settings(base_settings, kind, kinds, &source.overrides);
+    if !matches!(
+        source.definition,
+        DimensionDefinition::Linear { .. } | DimensionDefinition::Aligned { .. }
+    ) {
+        let inherited = resolve_dimension_settings(base_settings, kind, kinds, &Default::default());
+        if overrides_between(&inherited, &effective) != source.overrides {
+            losses
+                .note("dimension authored override presence normalized; effective values retained");
+        }
+    }
+    let dimension_point = dimension.definition_point();
     let base = dimension.base_mut();
     base.style_name = style_name.clone();
     base.normal = normal;
-    base.definition_point = line;
-    if let Ok(DimensionMeasurement::Distance(distance)) = evaluate_dimension(&source.definition) {
-        base.actual_measurement = distance;
+    base.definition_point = dimension_point;
+    if let Ok(measurement) = evaluate_dimension(&source.definition) {
+        base.actual_measurement = match measurement {
+            DimensionMeasurement::Distance(v) | DimensionMeasurement::Angle(v) => v,
+        };
     }
     base.set_text_override(label_in(&source.label));
     if let DimensionTextPlacement::Explicit {
@@ -1189,40 +1274,102 @@ fn ocs_to_world(point: Vector3, normal: Vector3) -> Vector3 {
 /// it, from the dimension's DIMASSOC object.
 fn associations_out(
     document: &Document,
-    dimension: Handle,
+    dimension: &Dimension,
+    losses: &mut Losses,
 ) -> Vec<(DimensionRole, Handle, DimensionPointSelector)> {
-    let Some(association) = document.objects.values().find_map(|object| match object {
+    let dimension_handle = dimension.base().common.handle;
+    let mut associations = document.objects.values().filter_map(|object| match object {
         ObjectType::Associative(object) => match &object.data {
-            AssociativeData::DimensionAssociation(a) if a.dimension == dimension => Some(a),
+            AssociativeData::DimensionAssociation(a) if a.dimension == dimension_handle => Some(a),
             _ => None,
         },
         _ => None,
-    }) else {
+    });
+    let Some(association) = associations.next() else {
         return Vec::new();
     };
+    if associations.next().is_some() || association.trans_space || association.rotated_type != 0 {
+        losses.note("unsupported chained, trans-space or rotated dimension association");
+        return Vec::new();
+    }
     let mut out = Vec::new();
-    for (slot, references) in association.references.iter().take(2).enumerate() {
+    for (slot, references) in association.references.iter().enumerate() {
+        if references.is_empty() {
+            continue;
+        }
+        if association.associativity & (1 << slot) == 0 {
+            losses.note("dimension association references in an inactive slot");
+            continue;
+        }
         let [reference] = references.as_slice() else {
+            losses.note("chained dimension point references");
             continue;
         };
+        if reference.class_name != "AcDbOsnapPointRef"
+            || !reference.xref_paths.is_empty()
+            || !reference.intersection_objects.is_empty()
+            || !reference.intersection_xref_paths.is_empty()
+            || reference.has_last_point_reference
+            || !matches!(reference.main_subent_type, 0 | 1)
+        {
+            losses.note("unsupported dimension point reference path, class or subentity state");
+            continue;
+        }
         let [source] = reference.xrefs.as_slice() else {
+            losses.note("dimension point reference without one direct source");
             continue;
         };
-        let selector = match (reference.osnap_type, document.get_entity(*source)) {
-            (13, Some(EntityType::Line(_))) => DimensionPointSelector::Start,
-            (1, Some(EntityType::Line(line))) if reference.osnap_point == line.start => {
+        // A vertex reference identifies a stable endpoint even after editing
+        // the source leaves its cached osnap_point stale. Unspecified legacy
+        // references still need an unambiguous stored endpoint coordinate.
+        let selector = match (
+            reference.osnap_type,
+            reference.main_subent_type,
+            reference.main_gs_marker,
+            document.get_entity(*source),
+        ) {
+            (13, 0 | 1, 0, Some(EntityType::Line(_))) | (1, 1, 0, Some(EntityType::Line(_))) => {
                 DimensionPointSelector::Start
             }
-            (1, Some(EntityType::Line(line))) if reference.osnap_point == line.end => {
+            (1, 1, 1, Some(EntityType::Line(_))) => DimensionPointSelector::End,
+            (1, 0, 0, Some(EntityType::Line(line))) if reference.osnap_point == line.start => {
+                DimensionPointSelector::Start
+            }
+            (1, 0, 0, Some(EntityType::Line(line))) if reference.osnap_point == line.end => {
                 DimensionPointSelector::End
             }
-            (3, Some(EntityType::Circle(_) | EntityType::Arc(_))) => DimensionPointSelector::Center,
-            (4, Some(EntityType::Point(_))) => DimensionPointSelector::Position,
-            _ => continue,
+            (3, 0 | 1, 0, Some(EntityType::Circle(_) | EntityType::Arc(_))) => {
+                DimensionPointSelector::Center
+            }
+            (4, 0 | 1, 0, Some(EntityType::Point(_))) => DimensionPointSelector::Position,
+            _ => {
+                losses.note("unsupported or ambiguous dimension source selector");
+                continue;
+            }
         };
-        let role = match slot {
-            0 => DimensionRole::FirstPoint,
-            _ => DimensionRole::SecondPoint,
+        let role = match (dimension, slot) {
+            (Dimension::Linear(_) | Dimension::Aligned(_), 0) => DimensionRole::FirstPoint,
+            (Dimension::Linear(_) | Dimension::Aligned(_), 1) => DimensionRole::SecondPoint,
+            (Dimension::Radius(_) | Dimension::LargeRadial(_), 0) => DimensionRole::CurvePoint,
+            (Dimension::Radius(_) | Dimension::LargeRadial(_), 1) => DimensionRole::Center,
+            (Dimension::Diameter(_), 0) => DimensionRole::FirstDiameterPoint,
+            (Dimension::Diameter(_), 1) => DimensionRole::SecondDiameterPoint,
+            (Dimension::Angular2Ln(_), 0) => DimensionRole::Line1Start,
+            (Dimension::Angular2Ln(_), 1) => DimensionRole::Line1End,
+            (Dimension::Angular2Ln(_), 2) => DimensionRole::Line2Start,
+            (Dimension::Angular2Ln(_), 3) => DimensionRole::Line2End,
+            (Dimension::Angular3Pt(_), 0) => DimensionRole::FirstLegPoint,
+            (Dimension::Angular3Pt(_), 1) => DimensionRole::SecondLegPoint,
+            (Dimension::Angular3Pt(_), 2) => DimensionRole::Vertex,
+            (Dimension::Ordinate(_), 0) => DimensionRole::Origin,
+            (Dimension::Ordinate(_), 1) => DimensionRole::FeaturePoint,
+            (Dimension::Arc(_), 1) => DimensionRole::Center,
+            (Dimension::Arc(_), 2) => DimensionRole::ArcStart,
+            (Dimension::Arc(_), 3) => DimensionRole::ArcEnd,
+            _ => {
+                losses.note("unsupported dimension association role");
+                continue;
+            }
         };
         out.push((role, *source, selector));
     }
@@ -1234,6 +1381,7 @@ pub(super) fn link_associations(
     entities: &mut [IfccadEntity],
     ids: &HashMap<Handle, u64>,
     sources: &HashMap<Handle, Vec<(DimensionRole, Handle, DimensionPointSelector)>>,
+    losses: &mut Losses,
 ) {
     let here: std::collections::HashMap<Handle, u64> = ids
         .iter()
@@ -1256,9 +1404,13 @@ pub(super) fn link_associations(
         dimension.associations = links
             .iter()
             .filter_map(|(role, source, selector)| {
+                let Some(source_entity_id) = here.get(source).copied() else {
+                    losses.note("dimension source was omitted or belongs to another owner");
+                    return None;
+                };
                 Some(IfccadDimensionAssociation {
                     role: *role,
-                    source_entity_id: *here.get(source)?,
+                    source_entity_id,
                     selector: *selector,
                 })
             })
@@ -1271,6 +1423,7 @@ pub(super) fn associations_in(
     drawing: &IfccadDocument,
     document: &mut Document,
     handles: &HashMap<u64, Handle>,
+    losses: &mut Losses,
 ) {
     let scopes = drawing.blocks.iter().map(|block| &block.entities);
     let papers = drawing.paper_layouts.iter().map(|paper| &paper.entities);
@@ -1296,22 +1449,48 @@ pub(super) fn associations_in(
         };
         for link in &dimension.associations {
             let Some(source) = handles.get(&link.source_entity_id).copied() else {
+                losses.note("dimension source entity was not converted");
                 continue;
             };
-            let (osnap_type, osnap_point) = match (link.selector, document.get_entity(source)) {
-                (DimensionPointSelector::Start, Some(EntityType::Line(line))) => (13, line.start),
-                (DimensionPointSelector::End, Some(EntityType::Line(line))) => (1, line.end),
-                (DimensionPointSelector::Center, Some(EntityType::Circle(circle))) => {
-                    (3, ocs_to_world(circle.center, circle.normal))
-                }
-                (DimensionPointSelector::Position, Some(EntityType::Point(point))) => {
-                    (4, point.location)
-                }
-                _ => continue,
-            };
+            let (osnap_type, osnap_point, main_subent_type, main_gs_marker) =
+                match (link.selector, document.get_entity(source)) {
+                    // Vertex markers distinguish both ends of the same source in
+                    // the shared editor's associative refresh path.
+                    (DimensionPointSelector::Start, Some(EntityType::Line(line))) => {
+                        (13, line.start, 1, 0)
+                    }
+                    (DimensionPointSelector::End, Some(EntityType::Line(line))) => {
+                        (1, line.end, 1, 1)
+                    }
+                    (DimensionPointSelector::Center, Some(EntityType::Circle(circle))) => {
+                        (3, ocs_to_world(circle.center, circle.normal), 0, 0)
+                    }
+                    (DimensionPointSelector::Center, Some(EntityType::Arc(arc))) => {
+                        (3, ocs_to_world(arc.center, arc.normal), 0, 0)
+                    }
+                    (DimensionPointSelector::Position, Some(EntityType::Point(point))) => {
+                        (4, point.location, 0, 0)
+                    }
+                    _ => {
+                        losses.note("unsupported dimension source selector");
+                        continue;
+                    }
+                };
             let slot = match link.role {
-                DimensionRole::FirstPoint => 0,
-                DimensionRole::SecondPoint => 1,
+                DimensionRole::FirstPoint
+                | DimensionRole::CurvePoint
+                | DimensionRole::FirstDiameterPoint
+                | DimensionRole::Line1Start
+                | DimensionRole::FirstLegPoint
+                | DimensionRole::Origin => 0,
+                DimensionRole::SecondPoint
+                | DimensionRole::SecondDiameterPoint
+                | DimensionRole::Line1End
+                | DimensionRole::SecondLegPoint
+                | DimensionRole::FeaturePoint
+                | DimensionRole::Center => 1,
+                DimensionRole::Line2Start | DimensionRole::Vertex | DimensionRole::ArcStart => 2,
+                DimensionRole::Line2End | DimensionRole::ArcEnd => 3,
             };
             association.associativity |= 1 << slot;
             association.references[slot].push(AssocDimensionReference {
@@ -1319,6 +1498,8 @@ pub(super) fn associations_in(
                 osnap_type,
                 xrefs: vec![source],
                 osnap_point,
+                main_subent_type,
+                main_gs_marker,
                 ..Default::default()
             });
         }

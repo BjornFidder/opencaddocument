@@ -37,12 +37,45 @@ impl<R: Read + Seek> DwgReader<R> {
     }
 
     pub fn read(&mut self) -> Result<Document, DxfError> {
-        self.0.read().map(Document::from)
+        self.0
+            .read()
+            .map(|raw| normalize_dwg_dimension_names(raw.into()))
     }
 
     pub fn read_with_stats(&mut self) -> Result<ReadOutcome, DxfError> {
-        self.0.read_with_stats().map(ReadOutcome::from)
+        self.0.read_with_stats().map(|raw| {
+            let mut outcome = ReadOutcome::from(raw);
+            outcome.document = normalize_dwg_dimension_names(outcome.document);
+            outcome
+        })
     }
+}
+
+fn normalize_dwg_dimension_names(mut document: Document) -> Document {
+    // acadrust 501b694 resolves an absent hard pointer (handle zero) to
+    // the synthetic unresolved name *U0. A null picture pointer is absence,
+    // whereas every nonzero dangling link must remain diagnosable. Restrict
+    // this correction to DWG reads and never erase a real block named *U0.
+    if document.block_records.get("*U0").is_some() {
+        return document;
+    }
+    let changes: Vec<_> = document
+        .entities()
+        .filter_map(|entity| match entity {
+            acadrust::EntityType::Dimension(d) if d.base().block_name == "*U0" => {
+                Some((d.base().common.handle, d.base().common.raw_record.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    for (handle, raw_record) in changes {
+        if let Some(acadrust::EntityType::Dimension(d)) = document.get_entity_mut(handle) {
+            d.base_mut().block_name.clear();
+            // Only derived name resolution changed, not encoded source data.
+            d.base_mut().common.raw_record = raw_record;
+        }
+    }
+    document
 }
 
 impl<R: Read + Seek> From<acadrust::DwgReader<R>> for DwgReader<R> {
