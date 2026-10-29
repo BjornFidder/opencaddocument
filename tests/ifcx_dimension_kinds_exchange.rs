@@ -298,6 +298,160 @@ fn unsupported_modes_are_diagnosed_instead_of_exporting_another_measure() {
 }
 
 #[test]
+fn line_endpoint_identity_survives_source_edits_and_physical_files() {
+    use opencaddocument::objects::{AssociativeData, ObjectType};
+    use opencaddocument::EntityType;
+    // The same source is intentionally used for both roles. Without explicit
+    // endpoint identity Studio resolves both default markers to its start.
+    let definition = DimensionDefinition::Linear {
+        first_point: [0., 0., 0.],
+        second_point: [18., 12., 0.],
+        direction_angle: 0.,
+        dimension_line_point: [0., 21.],
+        extension_direction_angle: None,
+    };
+    let mut source = cases::drawing(definition);
+    let source_id = source
+        .model
+        .entities
+        .iter()
+        .filter_map(IfccadEntity::as_native)
+        .find(|e| matches!(e.kind, IfccadEntityKind::LineSegment { .. }))
+        .unwrap()
+        .id;
+    for entity in &mut source.model.entities {
+        let Some(entity) = entity.as_native_mut() else {
+            continue;
+        };
+        if entity.id == source_id {
+            if let IfccadEntityKind::LineSegment { start, end, .. } = &mut entity.kind {
+                *start = [0., 0., 0.];
+                *end = [18., 12., 0.];
+            }
+        }
+        if let IfccadEntityKind::Dimension(d) = &mut entity.kind {
+            d.associations = vec![
+                IfccadDimensionAssociation {
+                    role: DimensionRole::FirstPoint,
+                    source_entity_id: source_id,
+                    selector: DimensionPointSelector::Start,
+                },
+                IfccadDimensionAssociation {
+                    role: DimensionRole::SecondPoint,
+                    source_entity_id: source_id,
+                    selector: DimensionPointSelector::End,
+                },
+            ];
+        }
+    }
+    recompute_ifccad_document_bounds(&mut source).unwrap();
+    validate_ifccad_document(&source).unwrap();
+    let imported = Ifcx.import_ifccad(&source).unwrap();
+    assert!(imported.losses.is_empty(), "{:?}", imported.losses);
+    fn check(document: &Document) {
+        let association = document
+            .objects
+            .values()
+            .find_map(|object| match object {
+                ObjectType::Associative(object) => match &object.data {
+                    AssociativeData::DimensionAssociation(a) => Some(a),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap();
+        let start = &association.references[0][0];
+        let end = &association.references[1][0];
+        assert_eq!((start.main_subent_type, start.main_gs_marker), (1, 0));
+        assert_eq!(
+            (end.main_subent_type, end.main_gs_marker),
+            (1, 1),
+            "end must not resolve to the start after source edits"
+        );
+        assert_eq!(start.xrefs, end.xrefs);
+        // Reproduce the resolver's vertex identity without comparing handles.
+        let Some(EntityType::Line(line)) = document.get_entity(start.xrefs[0]) else {
+            panic!("line source")
+        };
+        let points = [line.start, line.end];
+        assert_ne!(
+            points[start.main_gs_marker as usize],
+            points[end.main_gs_marker as usize]
+        );
+        let exported = Ifcx.export_ifccad(document).unwrap();
+        validate_ifccad_document(&exported.drawing).unwrap();
+        let actual = cases::dimension(&exported.drawing);
+        assert_eq!(
+            actual
+                .associations
+                .iter()
+                .map(|a| (a.role, a.selector))
+                .collect::<Vec<_>>(),
+            vec![
+                (DimensionRole::FirstPoint, DimensionPointSelector::Start),
+                (DimensionRole::SecondPoint, DimensionPointSelector::End),
+            ],
+            "endpoint identity must survive even when the stored snap point is stale"
+        );
+    }
+    check(&imported.document);
+    // Keep the coordinate-based unspecified legacy reference readable, while
+    // refusing unsupported or contradictory subentity encodings.
+    for (subentity, marker, osnap, supported) in [
+        (0, 0, 1, true),
+        (0, 1, 1, false),
+        (1, 2, 1, false),
+        (2, 1, 1, false),
+        (1, 1, 13, false),
+    ] {
+        let mut variant = imported.document.clone();
+        for object in variant.objects.values_mut() {
+            if let ObjectType::Associative(object) = object {
+                if let AssociativeData::DimensionAssociation(a) = &mut object.data {
+                    let end = &mut a.references[1][0];
+                    end.main_subent_type = subentity;
+                    end.main_gs_marker = marker;
+                    end.osnap_type = osnap;
+                }
+            }
+        }
+        let returned = Ifcx.export_ifccad(&variant).unwrap();
+        let associations = &cases::dimension(&returned.drawing).associations;
+        if supported {
+            assert_eq!(associations.len(), 2);
+            assert_eq!(associations[1].selector, DimensionPointSelector::End);
+        } else {
+            assert_eq!(associations.len(), 1);
+            assert!(!returned.losses.is_empty());
+        }
+    }
+    for transport in ["ascii", "binary", "dwg"] {
+        check(&physical(&imported.document, transport));
+        let mut edited = physical(&imported.document, transport);
+        let handle = edited
+            .objects
+            .values()
+            .find_map(|object| match object {
+                ObjectType::Associative(object) => match &object.data {
+                    AssociativeData::DimensionAssociation(a) => Some(a.references[0][0].xrefs[0]),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap();
+        let Some(EntityType::Line(line)) = edited.get_entity_mut(handle) else {
+            panic!("line source")
+        };
+        line.start.x += 3.;
+        line.end.x += 6.;
+        // DIMASSOC snap coordinates retain the pre-edit values. The explicit
+        // endpoint identity must remain usable both before and after saving.
+        check(&edited);
+        check(&physical(&edited, transport));
+    }
+}
+
+#[test]
 fn arc_sources_use_center_slot_one_and_angle_endpoints_two_and_three() {
     // Bricsys TD_Mgd 25.3 DimAssocPointType: CenterPoint=1,
     // AngLineStart=2, AngLineEnd=3. Slot zero is LeaderPoint, not ArcStart.

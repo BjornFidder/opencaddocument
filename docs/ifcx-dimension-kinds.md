@@ -71,6 +71,14 @@ No relation is invented from coincident geometry. Native stale definitions do
 not refresh from sources. Unsupported snap state, chained/path/intersection
 references, trans-space state, ambiguous stale endpoint snaps and omitted or
 cross-owner sources produce diagnostics while retaining an eligible definition.
+Line Start/End export uses explicit vertex subentity identity (type 1,
+markers 0/1), so editor refresh keeps the ends distinct when both roles refer
+to one line. Import retains these endpoint identities even when cached snap
+coordinates predate a source edit. Unspecified legacy endpoint references
+still use stored endpoint coordinates; unsupported marker/type/snap combinations
+remain diagnosed. The physical exchange regression covers ASCII/binary DXF and
+AC1032 DWG before and after a source edit. This repairs endpoint identity;
+general automatic update and interactive undo behavior remain host concerns.
 The role/slot aliases are independently specified by the
 [Bricsys TD_Mgd 25.3 enumeration](https://developer.bricsys.com/bricscad/help/en_US/V25/DevRef/source/html/b3505fcb-6bf5-cf6e-22f5-439c4447ce82.htm).
 Arc center/start/end have a literal-mask-14 test and actual file readback;

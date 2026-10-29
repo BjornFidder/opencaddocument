@@ -1311,7 +1311,6 @@ fn associations_out(
             || !reference.intersection_xref_paths.is_empty()
             || reference.has_last_point_reference
             || !matches!(reference.main_subent_type, 0 | 1)
-            || reference.main_gs_marker != 0
         {
             losses.note("unsupported dimension point reference path, class or subentity state");
             continue;
@@ -1320,16 +1319,29 @@ fn associations_out(
             losses.note("dimension point reference without one direct source");
             continue;
         };
-        let selector = match (reference.osnap_type, document.get_entity(*source)) {
-            (13, Some(EntityType::Line(_))) => DimensionPointSelector::Start,
-            (1, Some(EntityType::Line(line))) if reference.osnap_point == line.start => {
+        // A vertex reference identifies a stable endpoint even after editing
+        // the source leaves its cached osnap_point stale. Unspecified legacy
+        // references still need an unambiguous stored endpoint coordinate.
+        let selector = match (
+            reference.osnap_type,
+            reference.main_subent_type,
+            reference.main_gs_marker,
+            document.get_entity(*source),
+        ) {
+            (13, 0 | 1, 0, Some(EntityType::Line(_))) | (1, 1, 0, Some(EntityType::Line(_))) => {
                 DimensionPointSelector::Start
             }
-            (1, Some(EntityType::Line(line))) if reference.osnap_point == line.end => {
+            (1, 1, 1, Some(EntityType::Line(_))) => DimensionPointSelector::End,
+            (1, 0, 0, Some(EntityType::Line(line))) if reference.osnap_point == line.start => {
+                DimensionPointSelector::Start
+            }
+            (1, 0, 0, Some(EntityType::Line(line))) if reference.osnap_point == line.end => {
                 DimensionPointSelector::End
             }
-            (3, Some(EntityType::Circle(_) | EntityType::Arc(_))) => DimensionPointSelector::Center,
-            (4, Some(EntityType::Point(_))) => DimensionPointSelector::Position,
+            (3, 0 | 1, 0, Some(EntityType::Circle(_) | EntityType::Arc(_))) => {
+                DimensionPointSelector::Center
+            }
+            (4, 0 | 1, 0, Some(EntityType::Point(_))) => DimensionPointSelector::Position,
             _ => {
                 losses.note("unsupported or ambiguous dimension source selector");
                 continue;
@@ -1440,23 +1452,30 @@ pub(super) fn associations_in(
                 losses.note("dimension source entity was not converted");
                 continue;
             };
-            let (osnap_type, osnap_point) = match (link.selector, document.get_entity(source)) {
-                (DimensionPointSelector::Start, Some(EntityType::Line(line))) => (13, line.start),
-                (DimensionPointSelector::End, Some(EntityType::Line(line))) => (1, line.end),
-                (DimensionPointSelector::Center, Some(EntityType::Circle(circle))) => {
-                    (3, ocs_to_world(circle.center, circle.normal))
-                }
-                (DimensionPointSelector::Center, Some(EntityType::Arc(arc))) => {
-                    (3, ocs_to_world(arc.center, arc.normal))
-                }
-                (DimensionPointSelector::Position, Some(EntityType::Point(point))) => {
-                    (4, point.location)
-                }
-                _ => {
-                    losses.note("unsupported dimension source selector");
-                    continue;
-                }
-            };
+            let (osnap_type, osnap_point, main_subent_type, main_gs_marker) =
+                match (link.selector, document.get_entity(source)) {
+                    // Vertex markers distinguish both ends of the same source in
+                    // the shared editor's associative refresh path.
+                    (DimensionPointSelector::Start, Some(EntityType::Line(line))) => {
+                        (13, line.start, 1, 0)
+                    }
+                    (DimensionPointSelector::End, Some(EntityType::Line(line))) => {
+                        (1, line.end, 1, 1)
+                    }
+                    (DimensionPointSelector::Center, Some(EntityType::Circle(circle))) => {
+                        (3, ocs_to_world(circle.center, circle.normal), 0, 0)
+                    }
+                    (DimensionPointSelector::Center, Some(EntityType::Arc(arc))) => {
+                        (3, ocs_to_world(arc.center, arc.normal), 0, 0)
+                    }
+                    (DimensionPointSelector::Position, Some(EntityType::Point(point))) => {
+                        (4, point.location, 0, 0)
+                    }
+                    _ => {
+                        losses.note("unsupported dimension source selector");
+                        continue;
+                    }
+                };
             let slot = match link.role {
                 DimensionRole::FirstPoint
                 | DimensionRole::CurvePoint
@@ -1479,6 +1498,8 @@ pub(super) fn associations_in(
                 osnap_type,
                 xrefs: vec![source],
                 osnap_point,
+                main_subent_type,
+                main_gs_marker,
                 ..Default::default()
             });
         }
