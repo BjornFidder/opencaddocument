@@ -56,7 +56,7 @@ const TEMPLATE: &str = r#"{
     "author": "OpenCAD",
     "timestamp": "1970-01-01T00:00:00Z"
   },
-  "imports": [{ "uri": "urn:example:ifccad:0.2.0" }],
+  "imports": [{ "uri": "urn:example:ifccad:0.3.0" }],
   "schemas": {},
   "data": [
     {
@@ -74,7 +74,7 @@ const TEMPLATE: &str = r#"{
           "nextLayoutId": 2,
           "nextLinePatternId": 1,
           "nextSymbolSourceId": 1,
-          "profileVersion": "0.2.0",
+          "profileVersion": "0.3.0",
           "nextUcsId": 1,
           "nextModelWindowId": 1
         }
@@ -646,21 +646,24 @@ impl Writer<'_> {
 
     fn kind(&mut self, entity: &EntityType) -> Result<Option<IfccadEntityKind>, Error> {
         Ok(Some(match entity {
-            EntityType::Line(line) => {
-                if line.thickness != 0.0 {
-                    self.losses.note("line thickness");
-                }
-                IfccadEntityKind::LineSegment {
-                    start: array(line.start),
-                    end: array(line.end),
-                }
-            }
+            EntityType::Line(line) => IfccadEntityKind::LineSegment {
+                start: array(line.start),
+                end: array(line.end),
+                thickness: line.thickness,
+                extrusion_direction: array(unit_direction(line.normal)?),
+            },
             EntityType::Point(point) => IfccadEntityKind::Point {
-                placement: placement_out(point.location, Vector3::new(0.0, 0.0, 1.0), 0.0),
+                placement: point_placement(
+                    point.location,
+                    unit_direction(point.normal)?,
+                    point.x_axis_angle,
+                ),
+                thickness: point.thickness,
             },
             EntityType::Circle(circle) => IfccadEntityKind::Circle {
                 radius: circle.radius,
-                placement: placement_out(circle.center, circle.normal, 0.0),
+                placement: placement_out(circle.center, unit_direction(circle.normal)?, 0.0),
+                thickness: circle.thickness,
             },
             EntityType::Arc(arc) => IfccadEntityKind::Arc {
                 radius: arc.radius,
@@ -669,7 +672,8 @@ impl Writer<'_> {
                     0.0 => TAU,
                     sweep => sweep,
                 },
-                placement: placement_out(arc.center, arc.normal, 0.0),
+                placement: placement_out(arc.center, unit_direction(arc.normal)?, 0.0),
+                thickness: arc.thickness,
             },
             EntityType::Ellipse(ellipse) => {
                 let axis = to_ocs(ellipse.major_axis, ellipse.normal);
@@ -729,10 +733,55 @@ impl Writer<'_> {
                     closed: polyline.is_closed,
                     placement: placement_out(
                         Vector3::new(0.0, 0.0, polyline.elevation),
-                        polyline.normal,
+                        unit_direction(polyline.normal)?,
                         0.0,
                     ),
                     line_pattern_generation: generation(polyline.plinegen),
+                    thickness: polyline.thickness,
+                }
+            }
+            EntityType::Polyline2D(polyline) => {
+                if polyline.flags.bits() & !129 != 0
+                    || polyline.smooth_surface as i32 != 0
+                    || polyline
+                        .vertices
+                        .iter()
+                        .any(|v| v.flags.bits() != 0 || v.curve_tangent != 0. || v.location.z != 0.)
+                {
+                    self.losses
+                        .note("classic POLYLINE fitted/mesh or nonplanar vertex detail");
+                    return Ok(None);
+                }
+                self.losses.retained.push(Loss {handle:Some(polyline.common.handle),message:
+                    "classic POLYLINE mapped to PlanarPolyline; effective vertex widths retained; original default/override presence is unavailable or unassessed in the codec model; CAD return uses LWPOLYLINE".into()});
+                if polyline.vertices.iter().any(|v| v.id != 0) {
+                    self.losses.retained.push(Loss {
+                        handle: Some(polyline.common.handle),
+                        message: "classic POLYLINE vertex identifiers are not retained".into(),
+                    });
+                }
+                IfccadEntityKind::PlanarPolyline {
+                    widths: IfccadPlanarPolylineWidths::PerVertex {
+                        widths: polyline
+                            .vertices
+                            .iter()
+                            .map(|v| [v.start_width, v.end_width])
+                            .collect(),
+                    },
+                    vertices: polyline
+                        .vertices
+                        .iter()
+                        .map(|v| [v.location.x, v.location.y])
+                        .collect(),
+                    bulges: polyline.vertices.iter().map(|v| v.bulge).collect(),
+                    closed: polyline.is_closed(),
+                    placement: placement_out(
+                        Vector3::new(0., 0., polyline.elevation),
+                        unit_direction(polyline.normal)?,
+                        0.,
+                    ),
+                    thickness: polyline.thickness,
+                    line_pattern_generation: generation(polyline.flags.bits() & 128 != 0),
                 }
             }
             EntityType::Polyline3D(polyline) => {
@@ -944,20 +993,40 @@ impl Losses {
 
 fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Option<EntityType> {
     Some(match kind {
-        IfccadEntityKind::LineSegment { start, end } => {
-            EntityType::Line(Line::from_points(vector(*start), vector(*end)))
+        IfccadEntityKind::LineSegment {
+            start,
+            end,
+            thickness,
+            extrusion_direction,
+        } => {
+            let mut line = Line::from_points(vector(*start), vector(*end));
+            line.thickness = *thickness;
+            line.normal = vector(*extrusion_direction);
+            EntityType::Line(line)
         }
-        IfccadEntityKind::Point { placement } => {
+        IfccadEntityKind::Point {
+            placement,
+            thickness,
+        } => {
             let mut point = Point::new();
             point.location = vector(placement.origin);
+            let (_, normal, rotation) = placement_in(placement);
+            point.normal = normal;
+            point.x_axis_angle = rotation;
+            point.thickness = *thickness;
             EntityType::Point(point)
         }
-        IfccadEntityKind::Circle { radius, placement } => {
+        IfccadEntityKind::Circle {
+            radius,
+            placement,
+            thickness,
+        } => {
             let (center, normal, _) = placement_in(placement);
             let mut circle = Circle::new();
             circle.center = center;
             circle.normal = normal;
             circle.radius = *radius;
+            circle.thickness = *thickness;
             EntityType::Circle(circle)
         }
         IfccadEntityKind::Arc {
@@ -965,6 +1034,7 @@ fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Opt
             start_parameter,
             sweep_parameter,
             placement,
+            thickness,
         } => {
             let (center, normal, rotation) = placement_in(placement);
             // A clockwise sweep is the same arc drawn from its other end.
@@ -973,6 +1043,7 @@ fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Opt
             arc.center = center;
             arc.normal = normal;
             arc.radius = *radius;
+            arc.thickness = *thickness;
             arc.start_angle = start.rem_euclid(TAU);
             arc.end_angle = (start + sweep_parameter.abs()).rem_euclid(TAU);
             EntityType::Arc(arc)
@@ -1017,10 +1088,12 @@ fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Opt
             closed,
             placement,
             line_pattern_generation,
+            thickness,
         } => {
             let (origin, normal, rotation) = placement_in(placement);
             let mut polyline = LwPolyline::new();
             polyline.normal = normal;
+            polyline.thickness = *thickness;
             polyline.elevation = origin.z;
             polyline.is_closed = *closed;
             polyline.plinegen = *line_pattern_generation == IfccadLinePatternGeneration::Continuous;
@@ -1042,6 +1115,7 @@ fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Opt
                     default_end_width,
                     overrides,
                 } => {
+                    losses.retained.push(Loss{handle:None,message:"PlanarPolyline width inheritance materialized: effective widths retained, default/override dependencies lost".into()});
                     for (vertex, width) in polyline.vertices.iter_mut().zip(overrides) {
                         vertex.start_width = width.start.unwrap_or(*default_start_width);
                         vertex.end_width = width.end.unwrap_or(*default_end_width);
@@ -1430,6 +1504,21 @@ fn rfc3339(seconds: u64) -> String {
         time % 3_600 / 60,
         time % 60
     )
+}
+
+fn unit_direction(v: Vector3) -> Result<Vector3, Error> {
+    let m = v.x.abs().max(v.y.abs()).max(v.z.abs());
+    if ![v.x, v.y, v.z].into_iter().all(f64::is_finite) || m == 0. {
+        return Err("extrusion normal must be finite and nonzero".into());
+    }
+    let a = Vector3::new(v.x / m, v.y / m, v.z / m);
+    let n = a.x.hypot(a.y).hypot(a.z);
+    Ok(Vector3::new(a.x / n, a.y / n, a.z / n))
+}
+fn point_placement(origin: Vector3, normal: Vector3, angle: f64) -> IfccadPlacement {
+    let mut p = placement_out(Vector3::ZERO, normal, angle);
+    p.origin = array(origin);
+    p
 }
 
 #[cfg(test)]

@@ -256,13 +256,27 @@ pub(super) fn native(
     let mut a = actual.clone();
     match (&mut a, expected) {
         (
-            IfccadEntityKind::LineSegment { start: a, end: c },
-            IfccadEntityKind::LineSegment { start: b, end: d },
+            IfccadEntityKind::LineSegment {
+                start: a,
+                end: c,
+                extrusion_direction: na,
+                ..
+            },
+            IfccadEntityKind::LineSegment {
+                start: b,
+                end: d,
+                extrusion_direction: nb,
+                ..
+            },
         ) => {
             coords(a, b, NumericCategory::Position, path, n)?;
             coords(c, d, NumericCategory::Position, path, n)?;
+            coords(na, nb, NumericCategory::Direction, path, n)?;
         }
-        (IfccadEntityKind::Point { placement: a }, IfccadEntityKind::Point { placement: b })
+        (
+            IfccadEntityKind::Point { placement: a, .. },
+            IfccadEntityKind::Point { placement: b, .. },
+        )
         | (
             IfccadEntityKind::Circle { placement: a, .. },
             IfccadEntityKind::Circle { placement: b, .. },
@@ -398,6 +412,7 @@ pub(super) fn cad(
         (EntityType::Line(a), EntityType::Line(b)) => {
             vector_field(&mut a.start, b.start, NumericCategory::Position, path, n)?;
             vector_field(&mut a.end, b.end, NumericCategory::Position, path, n)?;
+            vector_field(&mut a.normal, b.normal, NumericCategory::Direction, path, n)?;
         }
         (EntityType::Point(a), EntityType::Point(b)) => vector_field(
             &mut a.location,
@@ -655,10 +670,14 @@ mod tests {
         let expected = IfccadEntityKind::LineSegment {
             start: [1e16, 0., 0.],
             end: [1e16 + 2., 0., 0.],
+            thickness: 0.,
+            extrusion_direction: [0., 0., 1.],
         };
         let actual = IfccadEntityKind::LineSegment {
             start: [1e16, 0., 0.],
             end: [1e16, 0., 0.],
+            thickness: 0.,
+            extrusion_direction: [0., 0., 1.],
         };
         assert!(native(&actual, &expected, "p0", &mut PictureNumerics::default()).is_ok());
     }
@@ -672,10 +691,12 @@ mod tests {
         let a = IfccadEntityKind::Circle {
             radius: 1.,
             placement: p.clone(),
+            thickness: 0.,
         };
         let b = IfccadEntityKind::Circle {
             radius: 2.,
             placement: p.clone(),
+            thickness: 0.,
         };
         assert!(native(&a, &b, "p0", &mut PictureNumerics::default()).is_err());
         let a = IfccadEntityKind::BlockInstance {
@@ -758,6 +779,7 @@ mod tests {
             closed: false,
             line_pattern_generation: IfccadLinePatternGeneration::PerSegment,
             widths: IfccadPlanarPolylineWidths::Constant { width: 0.25 },
+            thickness: 0.,
         };
         for which in 0..4 {
             let mut actual = expected.clone();

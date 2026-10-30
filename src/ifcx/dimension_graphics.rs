@@ -122,8 +122,15 @@ fn canonical(
     path: &str,
     numerics: &mut PictureNumerics,
 ) -> Prepared<IfccadEntityKind> {
+    if let Some(g) = kind
+        .as_shared_geometry()
+        .map_err(|_| invalid("invalid picture primitive"))?
+    {
+        ifccad::geometry_kernel::validate_geometry(g)
+            .map_err(|_| invalid("invalid picture primitive"))?;
+    }
     match &mut kind {
-        IfccadEntityKind::LineSegment { start, end } => {
+        IfccadEntityKind::LineSegment { start, end, .. } => {
             *start = point(*start, offset, path, numerics)?;
             *end = point(*end, offset, path, numerics)?;
         }
@@ -132,8 +139,10 @@ fn canonical(
                 *p = point(*p, offset, path, numerics)?;
             }
         }
-        IfccadEntityKind::Point { placement } => frame(placement, offset, path, numerics)?,
-        IfccadEntityKind::Circle { placement, radius }
+        IfccadEntityKind::Point { placement, .. } => frame(placement, offset, path, numerics)?,
+        IfccadEntityKind::Circle {
+            placement, radius, ..
+        }
         | IfccadEntityKind::Arc {
             placement, radius, ..
         } => {
@@ -689,17 +698,21 @@ fn cad_numbers(entity: &EntityType) -> Prepared<()> {
         EntityType::Line(v) => {
             vector(v.start)?;
             vector(v.end)?;
+            vector(v.normal)?;
             finite(v.thickness)?;
         }
         EntityType::Point(v) => {
+            finite(v.thickness)?;
             vector(v.location)?;
         }
         EntityType::Circle(v) => {
+            finite(v.thickness)?;
             vector(v.center)?;
             vector(v.normal)?;
             finite(v.radius)?;
         }
         EntityType::Arc(v) => {
+            finite(v.thickness)?;
             vector(v.center)?;
             vector(v.normal)?;
             finite(v.radius)?;

@@ -71,9 +71,9 @@ fn typed_export_matches_file_writer_and_strictly_reopens() {
     let EntityType::Line(line) = document.get_entity_mut(handle).unwrap() else {
         panic!("expected line");
     };
-    line.thickness = 2.0; // An existing, diagnosed IFCX conversion loss.
+    line.thickness = 2.0;
     let typed = Ifcx.export_ifccad(&document).unwrap();
-    assert!(!typed.losses.is_empty());
+    assert!(typed.losses.is_empty());
     let imported = Ifcx.import_ifccad(&typed.drawing).unwrap();
     let converted = imported
         .document
@@ -84,6 +84,7 @@ fn typed_export_matches_file_writer_and_strictly_reopens() {
     };
     assert_eq!(line.start, Vector3::new(1.0, 2.0, 0.0));
     assert_eq!(line.end, Vector3::new(4.0, 5.0, 0.0));
+    assert_eq!(line.thickness, 2.0);
     let (bytes, losses) = Ifcx.write(&document).unwrap();
     assert_eq!(typed.losses, losses);
     let mut file = ifccad::load_ifccad_bytes(&bytes, Default::default())

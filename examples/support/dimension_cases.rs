@@ -165,7 +165,12 @@ fn picture(
     settings: &IfccadDimensionSettings,
 ) -> IfccadDimensionGraphics {
     use IfccadDimensionGraphicsKind as G;
-    let line = |a: [f64; 3], b: [f64; 3]| G::LineSegment { start: a, end: b };
+    let line = |a: [f64; 3], b: [f64; 3]| G::LineSegment {
+        start: a,
+        end: b,
+        thickness: 0.,
+        extrusion_direction: [0., 0., 1.],
+    };
     let mut shapes = vec![];
     let arrow = |tip: [f64; 3], towards: [f64; 3]| {
         let dx = towards[0] - tip[0];
@@ -201,6 +206,7 @@ fn picture(
             shapes.push(G::Circle {
                 placement: plane(*center),
                 radius: 5.,
+                thickness: 0.,
             });
             if let DimensionDefinition::JoggedRadius {
                 display_center,
@@ -234,6 +240,7 @@ fn picture(
             shapes.push(G::Circle {
                 placement: plane([0.; 3]),
                 radius: 5.,
+                thickness: 0.,
             });
             shapes.push(line(*first_diameter_point, *second_diameter_point));
             shapes.push(arrow(*first_diameter_point, *second_diameter_point));
@@ -249,6 +256,7 @@ fn picture(
                 radius: 50_f64.sqrt(),
                 start_parameter: 0.,
                 sweep_parameter: std::f64::consts::FRAC_PI_2,
+                thickness: 0.,
             });
             let r = 50_f64.sqrt();
             shapes.push(arrow([r, 0., 0.], [r, 1., 0.]));
@@ -279,12 +287,14 @@ fn picture(
                 radius: *radius,
                 start_parameter: *start_parameter,
                 sweep_parameter: sweep.radians(),
+                thickness: 0.,
             });
             shapes.push(G::Arc {
                 placement: plane([0.; 3]),
                 radius: 72_f64.sqrt(),
                 start_parameter: *start_parameter,
                 sweep_parameter: sweep.radians(),
+                thickness: 0.,
             });
             shapes.push(line([5., 0., 0.], [9., 0., 0.]));
             shapes.push(line([0., 5., 0.], [0., 9., 0.]));

@@ -442,8 +442,8 @@ dependencies = [
 
 [[package]]
 name = "ifccad"
-version = "2026.44.0"
-source = "git+https://github.com/OpenAEC-Foundation/ifccad.git?rev=bce9da06a8e1684e86e35f0302e3870141e6f9f9#bce9da06a8e1684e86e35f0302e3870141e6f9f9"
+version = "2026.44.1"
+source = "git+https://github.com/OpenAEC-Foundation/ifccad.git?rev=07e1ef1c4e975afcab0a07012bed8a82a56202cb#07e1ef1c4e975afcab0a07012bed8a82a56202cb"
 dependencies = [
  "base64",
  "fpmath",

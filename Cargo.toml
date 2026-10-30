@@ -15,8 +15,10 @@ ifcx = ["dep:ifccad", "dep:web-time"]
 acadrust = { git = "https://github.com/HakanSeven12/acadrust.git", rev = "0a5542b" }
 serde = { version = "1", features = ["derive"], optional = true }
 # ifccad only reads and writes IFCX; the mapping to `Document` lives here.
-ifccad = { git = "https://github.com/OpenAEC-Foundation/ifccad.git", rev = "bce9da06a8e1684e86e35f0302e3870141e6f9f9", optional = true }
+ifccad = { git = "https://github.com/OpenAEC-Foundation/ifccad.git", rev = "07e1ef1c4e975afcab0a07012bed8a82a56202cb", optional = true }
 web-time = { version = "1", optional = true }
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[workspace]

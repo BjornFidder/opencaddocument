@@ -158,6 +158,8 @@ fn native_picture_is_attached_and_returns_with_its_scope_coordinates() {
         IfccadDimensionGraphicsKind::LineSegment {
             start: [0., 1., 0.],
             end: [12., 1., 0.],
+            thickness: 0.,
+            extrusion_direction: [0., 0., 1.],
         },
     )]));
     let (document, losses) = read(&drawing);
@@ -177,7 +179,7 @@ fn native_picture_is_attached_and_returns_with_its_scope_coordinates() {
     let d = dimension(&restored);
     let picture = d.graphics.as_ref().unwrap();
     assert_eq!(picture.parts.len(), 1);
-    let IfccadDimensionGraphicsKind::LineSegment { start, end } = picture.parts[0].kind else {
+    let IfccadDimensionGraphicsKind::LineSegment { start, end, .. } = picture.parts[0].kind else {
         panic!()
     };
     assert_eq!(start, [0., -299., 0.]);
@@ -240,7 +242,7 @@ fn absent_empty_and_generated_empty_remain_distinct() {
 fn a_bad_sibling_omits_the_whole_picture() {
     let (mut document, _) = read(&source());
     let mut bad = Line::from_points(Vector3::new(0., 0., 0.), Vector3::new(1., 0., 0.));
-    bad.thickness = 1.;
+    bad.common.shadow_flags = 1; // thickness is supported by the new profile.
     add_picture(&mut document, vec![line(), EntityType::Line(bad)]);
     let (bytes, losses) = Ifcx.write(&document).unwrap();
     assert!(
@@ -264,16 +266,19 @@ fn simple_parts(drawing: &IfccadDocument) -> Vec<IfccadDimensionGraphicsPart> {
     vec![
         part(IfccadDimensionGraphicsKind::Point {
             placement: p.clone(),
+            thickness: 0.,
         }),
         part(IfccadDimensionGraphicsKind::Circle {
             placement: p.clone(),
             radius: 1.5,
+            thickness: 0.,
         }),
         part(IfccadDimensionGraphicsKind::Arc {
             placement: p.clone(),
             radius: 2.,
             start_parameter: 0.,
             sweep_parameter: 1.,
+            thickness: 0.,
         }),
         part(IfccadDimensionGraphicsKind::Ellipse {
             placement: p.clone(),
@@ -294,6 +299,7 @@ fn simple_parts(drawing: &IfccadDocument) -> Vec<IfccadDimensionGraphicsPart> {
             closed: false,
             widths: IfccadPlanarPolylineWidths::Constant { width: 0.25 },
             line_pattern_generation: IfccadLinePatternGeneration::Continuous,
+            thickness: 0.,
         }),
         part(IfccadDimensionGraphicsKind::SpatialPolyline {
             vertices: vec![[0., 0., 1.], [2., 1., 2.]],
@@ -373,6 +379,60 @@ fn primitive_text_and_width_families_transfer_as_one_complete_picture() {
 }
 
 #[test]
+fn five_thick_primitive_families_survive_saved_picture_file_readback() {
+    let mut drawing = source();
+    let mut parts = simple_parts(&drawing);
+    parts.push(part(IfccadDimensionGraphicsKind::LineSegment {
+        start: [0., 0., 0.],
+        end: [2., 1., 0.],
+        thickness: 0.,
+        extrusion_direction: [0., 0., 1.],
+    }));
+    for p in &mut parts {
+        match &mut p.kind {
+            IfccadDimensionGraphicsKind::Point { thickness, .. }
+            | IfccadDimensionGraphicsKind::Circle { thickness, .. }
+            | IfccadDimensionGraphicsKind::Arc { thickness, .. }
+            | IfccadDimensionGraphicsKind::PlanarPolyline { thickness, .. } => *thickness = -1.25,
+            IfccadDimensionGraphicsKind::LineSegment {
+                thickness,
+                extrusion_direction,
+                ..
+            } => {
+                *thickness = -1.25;
+                *extrusion_direction = [0., -0.6, 0.8];
+            }
+            _ => {}
+        }
+    }
+    dimension_mut(&mut drawing).graphics = Some(graphics(parts));
+    let (cad, _) = read(&drawing);
+    for format in [&opencaddocument::Dxf as &dyn Format, &opencaddocument::Dwg] {
+        let bytes = format.write(&cad).unwrap().0;
+        let read = format.read(&bytes).unwrap().0;
+        let bytes = Ifcx.write(&read).unwrap().0;
+        let native = load(&bytes);
+        let graphic = dimension(&native)
+            .graphics
+            .as_ref()
+            .expect("whole picture retained");
+        let hs: Vec<_> = graphic
+            .parts
+            .iter()
+            .filter_map(|p| match &p.kind {
+                IfccadDimensionGraphicsKind::Point { thickness, .. }
+                | IfccadDimensionGraphicsKind::Circle { thickness, .. }
+                | IfccadDimensionGraphicsKind::Arc { thickness, .. }
+                | IfccadDimensionGraphicsKind::PlanarPolyline { thickness, .. }
+                | IfccadDimensionGraphicsKind::LineSegment { thickness, .. } => Some(*thickness),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hs, vec![-1.25; 5], "{}", format.name());
+    }
+}
+
+#[test]
 fn physical_dxf_and_dwg_readback_keeps_the_picture() {
     let (mut document, _) = read(&source());
     add_picture(&mut document, vec![line()]);
@@ -401,6 +461,7 @@ fn source_helpers_and_explicit_layer_zero_are_never_silently_changed() {
         let mut drawing = source();
         let mut helper = part(IfccadDimensionGraphicsKind::Point {
             placement: frame([1., 2., 0.]),
+            thickness: 0.,
         });
         helper.purpose = IfccadDimensionGraphicsPurpose::ReferencePoint;
         helper.layer_id = explicit.then_some(0);
@@ -408,6 +469,8 @@ fn source_helpers_and_explicit_layer_zero_are_never_silently_changed() {
             part(IfccadDimensionGraphicsKind::LineSegment {
                 start: [0., 0., 0.],
                 end: [1., 0., 0.],
+                thickness: 0.,
+                extrusion_direction: [0., 0., 1.],
             }),
             helper,
         ]));
@@ -436,6 +499,8 @@ fn translated_and_rotated_dimension_frames_keep_owner_geometry() {
             IfccadDimensionGraphicsKind::LineSegment {
                 start: [0.1, 0., 0.],
                 end: [1., 0., 0.],
+                thickness: 0.,
+                extrusion_direction: [0., 0., 1.],
             },
         )]));
         let (document, losses) = read(&drawing);
@@ -578,6 +643,8 @@ fn finite_translation_rounding_keeps_the_picture() {
         IfccadDimensionGraphicsKind::LineSegment {
             start: [0.1, 0., 0.],
             end: [1., 0., 0.],
+            thickness: 0.,
+            extrusion_direction: [0., 0., 1.],
         },
     )]));
     let (document, losses) = read(&drawing);
@@ -628,6 +695,7 @@ fn marker(drawing: &mut IfccadDocument, kind: IfccadEntityKind) -> u64 {
     member.kind = kind;
     member.appearance = part(IfccadDimensionGraphicsKind::Point {
         placement: frame([0.; 3]),
+        thickness: 0.,
     })
     .appearance;
     drawing.blocks.push(IfccadBlockDefinition {
@@ -659,6 +727,7 @@ fn wide_marker_resources_transfer_completely_and_remain_shared() {
             closed: false,
             line_pattern_generation: IfccadLinePatternGeneration::Continuous,
             widths: IfccadPlanarPolylineWidths::Constant { width: 0.25 },
+            thickness: 0.,
         },
     );
     let a = part(IfccadDimensionGraphicsKind::BlockInstance {
@@ -717,6 +786,7 @@ fn defaulted_width_metadata_is_reported_for_direct_parts_and_marker_members() {
                 default_end_width: 0.5,
                 overrides: vec![Default::default(), Default::default()],
             },
+            thickness: 0.,
         };
         let kind = if nested {
             let definition_id = marker(&mut drawing, kind);
@@ -753,6 +823,7 @@ fn reference_points_on_defpoints_keep_their_role_and_stored_position() {
     drawing.id_counters.next_layer_id = 4;
     let mut helper = part(IfccadDimensionGraphicsKind::Point {
         placement: frame([100., 200., 0.]),
+        thickness: 0.,
     });
     helper.layer_id = Some(3);
     helper.visible = false;
@@ -766,7 +837,7 @@ fn reference_points_on_defpoints_keep_their_role_and_stored_position() {
     let p = &dimension(&native).graphics.as_ref().unwrap().parts[0];
     assert_eq!(p.purpose, IfccadDimensionGraphicsPurpose::ReferencePoint);
     assert!(!p.visible);
-    let IfccadDimensionGraphicsKind::Point { placement } = &p.kind else {
+    let IfccadDimensionGraphicsKind::Point { placement, .. } = &p.kind else {
         panic!()
     };
     assert_eq!(placement.origin, [100., -100., 0.]);
@@ -881,6 +952,8 @@ fn positive_pictures_in_paper_and_block_owners_keep_scope_positions() {
             IfccadDimensionGraphicsKind::LineSegment {
                 start: [0., 1., 0.],
                 end: [12., 1., 0.],
+                thickness: 0.,
+                extrusion_direction: [0., 0., 1.],
             },
         )]));
         let members = std::mem::take(&mut drawing.model.entities);
@@ -988,6 +1061,8 @@ fn failing_marker_members_leave_no_partial_native_resource_or_picture() {
         IfccadEntityKind::LineSegment {
             start: [0., 0., 0.],
             end: [2., 1., 0.],
+            thickness: 0.,
+            extrusion_direction: [0., 0., 1.],
         },
     );
     dimension_mut(&mut drawing).graphics = Some(graphics(vec![part(
@@ -1017,7 +1092,7 @@ fn failing_marker_members_leave_no_partial_native_resource_or_picture() {
     let EntityType::Line(line) = document.get_entity_mut(leaf).unwrap() else {
         panic!()
     };
-    line.thickness = 1.;
+    line.common.shadow_flags = 1; // unsupported common metadata.
     let (bytes, losses) = Ifcx.write(&document).unwrap();
     assert!(
         losses.iter().any(|l| l.message.contains("graphics")),
@@ -1035,6 +1110,8 @@ fn independent_cycles_preserve_the_first_transferred_scope_positions() {
         IfccadDimensionGraphicsKind::LineSegment {
             start: [0., 1., 0.],
             end: [12., 1., 0.],
+            thickness: 0.,
+            extrusion_direction: [0., 0., 1.],
         },
     )]));
     for _ in 0..3 {
@@ -1044,7 +1121,7 @@ fn independent_cycles_preserve_the_first_transferred_scope_positions() {
         assert!(losses.is_empty(), "{losses:?}");
         drawing = load(&bytes);
         let d = dimension(&drawing);
-        let IfccadDimensionGraphicsKind::LineSegment { start, end } =
+        let IfccadDimensionGraphicsKind::LineSegment { start, end, .. } =
             d.graphics.as_ref().unwrap().parts[0].kind
         else {
             panic!()
@@ -1086,6 +1163,8 @@ fn explicit_layer_zero_factoring_is_reported_even_when_current_owner_matches() {
     let mut p = part(IfccadDimensionGraphicsKind::LineSegment {
         start: [0., 0., 0.],
         end: [1., 0., 0.],
+        thickness: 0.,
+        extrusion_direction: [0., 0., 1.],
     });
     p.layer_id = Some(0);
     d.graphics = Some(graphics(vec![p]));
@@ -1125,6 +1204,8 @@ fn unrepresented_marker_record_metadata_is_diagnosed_atomically() {
         IfccadEntityKind::LineSegment {
             start: [0.; 3],
             end: [1., 0., 0.],
+            thickness: 0.,
+            extrusion_direction: [0., 0., 1.],
         },
     );
     dimension_mut(&mut drawing).graphics = Some(graphics(vec![part(

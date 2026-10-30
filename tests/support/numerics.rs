@@ -354,7 +354,7 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
     let dimension=d.model.entities.iter().find(|e|matches!(&e.as_native().unwrap().kind,IfccadEntityKind::Dimension(dim) if matches!(dim.definition,DimensionDefinition::Linear {..}))).unwrap().clone();
     let template = line.as_native().unwrap().clone();
     d.model.entities = vec![line, dimension];
-    let IfccadEntityKind::LineSegment { start, end } =
+    let IfccadEntityKind::LineSegment { start, end, .. } =
         &mut d.model.entities[0].as_native_mut().unwrap().kind
     else {
         panic!()
@@ -380,13 +380,17 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
             part(IfccadDimensionGraphicsKind::LineSegment {
                 start: [0., 10. * f, 0.],
                 end: [40. * f, 10. * f, 0.],
+                thickness: 0.,
+                extrusion_direction: [0., 0., 1.],
             }),
             part(IfccadDimensionGraphicsKind::Circle {
                 radius: 1.5 * f,
                 placement: identity([2. * f, 4. * f, 0.]),
+                thickness: 0.,
             }),
             part(IfccadDimensionGraphicsKind::Point {
                 placement: identity([3. * f, 5. * f, f]),
+                thickness: 0.,
             }),
             part(IfccadDimensionGraphicsKind::BlockInstance {
                 definition_id: 10,
@@ -409,6 +413,7 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
                 radius: 2. * f,
                 start_parameter: 0.,
                 sweep_parameter: 1.,
+                thickness: 0.,
             }),
             part(IfccadDimensionGraphicsKind::Ellipse {
                 placement: p.clone(),
@@ -422,6 +427,7 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
                 closed: false,
                 line_pattern_generation: IfccadLinePatternGeneration::Continuous,
                 widths: IfccadPlanarPolylineWidths::Constant { width: 0.25 * f },
+                thickness: 0.,
             }),
             part(IfccadDimensionGraphicsKind::SpatialPolyline {
                 vertices: vec![[0., 0., f], [2. * f, f, 2. * f]],
@@ -503,6 +509,8 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
         IfccadEntityKind::LineSegment {
             start: [0.; 3],
             end: [2. * f, f, 0.],
+            thickness: 0.,
+            extrusion_direction: [0., 0., 1.],
         },
     );
     d.blocks.push(block(
@@ -519,6 +527,7 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
         IfccadEntityKind::Circle {
             radius: 3. * f,
             placement: identity([30. * f, 5. * f, 2. * f]),
+            thickness: 0.,
         },
     ));
     if case.data["wide_picture"] == true {
@@ -528,7 +537,7 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
             let offset = [16. * f, 8. * f, 0.];
             let shift = |p: &mut IfccadPlacement| p.origin = add(p.origin, offset);
             match &mut kind {
-                IfccadEntityKind::LineSegment { start, end } => {
+                IfccadEntityKind::LineSegment { start, end, .. } => {
                     *start = add(*start, offset);
                     *end = add(*end, offset);
                 }
@@ -537,7 +546,7 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
                         *v = add(*v, offset);
                     }
                 }
-                IfccadEntityKind::Point { placement }
+                IfccadEntityKind::Point { placement, .. }
                 | IfccadEntityKind::Circle { placement, .. }
                 | IfccadEntityKind::Arc { placement, .. }
                 | IfccadEntityKind::Ellipse { placement, .. }
@@ -580,6 +589,7 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
             start_parameter: 0.5,
             sweep_parameter: 1.5,
             placement: identity([-10. * f, 20. * f, 0.]),
+            thickness: 0.,
         },
     ));
     for (i, p) in case.data["poses"].as_array().unwrap().iter().enumerate() {
@@ -785,7 +795,7 @@ pub fn native_world(d: &IfccadDocument) -> Observation {
                 };
                 walk(d, &b.entities, child, &next, out, depth + 1);
             }
-            IfccadEntityKind::LineSegment { start, end } => {
+            IfccadEntityKind::LineSegment { start, end, .. } => {
                 let key = if prefix.ends_with("marker/") {
                     prefix.to_owned()
                 } else {
@@ -794,10 +804,12 @@ pub fn native_world(d: &IfccadDocument) -> Observation {
                 out.point(&format!("{key}start"), t, *start);
                 out.point(&format!("{key}end"), t, *end);
             }
-            IfccadEntityKind::Point { placement } => {
+            IfccadEntityKind::Point { placement, .. } => {
                 out.point(&format!("{prefix}point"), t, placement.origin)
             }
-            IfccadEntityKind::Circle { radius, placement } => out.conic(
+            IfccadEntityKind::Circle {
+                radius, placement, ..
+            } => out.conic(
                 &format!("{prefix}circle"),
                 t.then(frame(placement)),
                 *radius,
@@ -810,6 +822,7 @@ pub fn native_world(d: &IfccadDocument) -> Observation {
                 start_parameter,
                 sweep_parameter,
                 placement,
+                ..
             } => out.conic(
                 &format!("{prefix}arc"),
                 t.then(frame(placement)),

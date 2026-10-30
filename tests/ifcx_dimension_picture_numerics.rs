@@ -33,6 +33,8 @@ fn single_line(d: &mut IfccadDocument) {
     part.kind = IfccadDimensionGraphicsKind::LineSegment {
         start: [0.1, 0., 0.],
         end: [1., 0., 0.],
+        thickness: 0.,
+        extrusion_direction: [0., 0., 1.],
     };
     dim.graphics.as_mut().unwrap().parts = vec![part];
 }
@@ -209,6 +211,8 @@ fn one_rounding_note_does_not_trigger_picture_omission() {
     dim.graphics.as_mut().unwrap().parts[0].kind = IfccadDimensionGraphicsKind::LineSegment {
         start: [0., 0., 0.],
         end: [1., 0., 0.],
+        thickness: 0.,
+        extrusion_direction: [0., 0., 1.],
     };
     let encoded = encode_ifccad_document(&exact).unwrap();
     let (_, losses) = Ifcx.read(encoded.bytes()).unwrap();
@@ -233,6 +237,8 @@ fn late_marker_failure_rolls_back_picture_resources_and_retained_notes() {
     parts[1].kind = IfccadDimensionGraphicsKind::LineSegment {
         start: [1e12, 0., 0.],
         end: [1e12, 1., 0.],
+        thickness: 0.,
+        extrusion_direction: [0., 0., 1.],
     };
     let (s, c) = 0.37_f64.sin_cos();
     dim.placement.x_axis = [c, s, 0.];
@@ -372,6 +378,8 @@ fn shared_marker_pictures_get_at_most_one_numeric_note_each() {
     dim.graphics.as_mut().unwrap().parts[0].kind = IfccadDimensionGraphicsKind::LineSegment {
         start: [0.1, 0., 0.],
         end: [1., 0., 0.],
+        thickness: 0.,
+        extrusion_direction: [0., 0., 1.],
     };
     let mut second = d
         .model

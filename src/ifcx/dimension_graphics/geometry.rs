@@ -92,7 +92,17 @@ pub(super) fn transform(
         Ok(())
     };
     match &mut kind {
-        IfccadEntityKind::LineSegment { start, end } => {
+        IfccadEntityKind::LineSegment {
+            start,
+            end,
+            extrusion_direction,
+            ..
+        } => {
+            let (normal, rounded) = direction(*extrusion_direction)?;
+            *extrusion_direction = normal;
+            if rounded {
+                numerics.record(path, NumericCategory::Direction);
+            }
             let (a, ra) = at(*start)?;
             let (b, rb) = at(*end)?;
             *start = a;
@@ -110,7 +120,7 @@ pub(super) fn transform(
                 }
             }
         }
-        IfccadEntityKind::Point { placement }
+        IfccadEntityKind::Point { placement, .. }
         | IfccadEntityKind::Circle { placement, .. }
         | IfccadEntityKind::Arc { placement, .. }
         | IfccadEntityKind::Ellipse { placement, .. }
@@ -140,6 +150,8 @@ mod tests {
         let kind = IfccadEntityKind::LineSegment {
             start: [1e12, 0., 0.],
             end: [0.; 3],
+            thickness: 0.,
+            extrusion_direction: [0., 0., 1.],
         };
         let mut numerics = PictureNumerics::default();
         let out = transform(kind, &frame, false, "p0", &mut numerics)
@@ -167,11 +179,15 @@ mod tests {
                 x_axis: [cos, sin, 0.],
                 y_axis: [-sin, cos, 0.],
             },
+            thickness: 0.,
         };
         let mut numerics = PictureNumerics::default();
         let out = transform(kind, &frame, false, "p0", &mut numerics)
             .unwrap_or_else(|_| panic!("valid finite circle"));
-        let IfccadEntityKind::Circle { radius, placement } = out else {
+        let IfccadEntityKind::Circle {
+            radius, placement, ..
+        } = out
+        else {
             panic!()
         };
         assert_eq!(radius, 1e12);
