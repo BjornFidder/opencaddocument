@@ -82,6 +82,8 @@ pub(super) fn hatch_out(hatch: &Hatch, losses: &mut Losses) -> Option<IfccadEnti
         pixel_size: hatch.pixel_size,
     };
     let converted = IfccadHatch {
+        annotation: None,
+        annotation_view_contexts: None,
         classic_settings: classic.filter(|c| validate_hatch_classic_settings(c).is_ok()),
         boundary_construction: (!construction.is_empty()
             && validate_hatch_boundary_construction(&construction).is_ok())
@@ -213,13 +215,13 @@ pub(super) fn hatch_in(hatch: &IfccadHatch) -> EntityType {
 
 /// A frame turned in the hatch plane, for IFCX hatches whose placement is
 /// not square to the OCS; written ones always are.
-struct Frame2 {
-    origin: [f64; 2],
-    rotation: f64,
+pub(super) struct Frame2 {
+    pub(super) origin: [f64; 2],
+    pub(super) rotation: f64,
 }
 
 impl Frame2 {
-    fn vector(&self, [u, v]: [f64; 2]) -> Vector2 {
+    pub(super) fn vector(&self, [u, v]: [f64; 2]) -> Vector2 {
         match self.rotation {
             0.0 => Vector2::new(u, v),
             rotation => {
@@ -229,7 +231,7 @@ impl Frame2 {
         }
     }
 
-    fn point(&self, p: [f64; 2]) -> Vector2 {
+    pub(super) fn point(&self, p: [f64; 2]) -> Vector2 {
         let v = self.vector(p);
         match self.origin {
             [0.0, 0.0] => v,
@@ -238,7 +240,7 @@ impl Frame2 {
     }
 }
 
-fn boundary_out(path: &BoundaryPath) -> Option<HatchBoundary2> {
+pub(super) fn boundary_out(path: &BoundaryPath) -> Option<HatchBoundary2> {
     let xy = |p: Vector2| [p.x, p.y];
     match path.edges.as_slice() {
         [BoundaryEdge::Polyline(polyline)] => {
@@ -300,7 +302,7 @@ fn boundary_out(path: &BoundaryPath) -> Option<HatchBoundary2> {
     Some(HatchBoundary2::Edges(edges))
 }
 
-fn boundary_in(boundary: &HatchBoundary2, frame: &Frame2) -> BoundaryPath {
+pub(super) fn boundary_in(boundary: &HatchBoundary2, frame: &Frame2) -> BoundaryPath {
     let mut path = BoundaryPath::new();
     match boundary {
         HatchBoundary2::Polyline { vertices, bulges } => {

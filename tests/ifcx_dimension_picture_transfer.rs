@@ -309,6 +309,7 @@ fn simple_parts(drawing: &IfccadDocument) -> Vec<IfccadDimensionGraphicsPart> {
         part(IfccadDimensionGraphicsKind::Solid(q.clone())),
         part(IfccadDimensionGraphicsKind::Trace(q)),
         part(IfccadDimensionGraphicsKind::Text(IfccadText {
+            annotation: None,
             style_id,
             placement: p.clone(),
             rotation: 0.,
@@ -330,6 +331,7 @@ fn simple_parts(drawing: &IfccadDocument) -> Vec<IfccadDimensionGraphicsPart> {
             }],
         })),
         part(IfccadDimensionGraphicsKind::MText(Box::new(IfccadMText {
+            annotation: None,
             style_id,
             placement: p,
             rotation: 0.,
@@ -699,6 +701,7 @@ fn marker(drawing: &mut IfccadDocument, kind: IfccadEntityKind) -> u64 {
     })
     .appearance;
     drawing.blocks.push(IfccadBlockDefinition {
+        annotation: Default::default(),
         id: 1,
         name: "Arrow".into(),
         description: String::new(),
@@ -959,6 +962,7 @@ fn positive_pictures_in_paper_and_block_owners_keep_scope_positions() {
         let members = std::mem::take(&mut drawing.model.entities);
         if block {
             drawing.blocks.push(IfccadBlockDefinition {
+                annotation: Default::default(),
                 id: 1,
                 name: "Owner".into(),
                 description: String::new(),
@@ -974,6 +978,7 @@ fn positive_pictures_in_paper_and_block_owners_keep_scope_positions() {
             drawing.id_counters.next_block_id = 2;
         } else {
             drawing.paper_layouts.push(IfccadPaperLayout {
+                annotation_state: None,
                 id: 2,
                 name: "Sheet".into(),
                 tab_index: 1,
