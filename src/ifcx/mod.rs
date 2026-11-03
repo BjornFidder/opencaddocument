@@ -40,6 +40,7 @@ mod annotation_views;
 mod dimension;
 mod dimension_graphics;
 mod dimension_kinds;
+mod font;
 mod hatch;
 mod layout;
 mod tables;
@@ -61,7 +62,7 @@ const TEMPLATE: &str = r#"{
     "author": "OpenCAD",
     "timestamp": "1970-01-01T00:00:00Z"
   },
-  "imports": [{ "uri": "urn:example:ifccad:0.4.0" }],
+  "imports": [{ "uri": "urn:example:ifccad:0.5.0" }],
   "schemas": {},
   "data": [
     {
@@ -79,7 +80,7 @@ const TEMPLATE: &str = r#"{
           "nextLayoutId": 2,
           "nextLinePatternId": 1,
           "nextSymbolSourceId": 1,
-          "profileVersion": "0.4.0",
+          "profileVersion": "0.5.0",
           "nextUcsId": 1,
           "nextModelWindowId": 1
         }
@@ -195,6 +196,7 @@ impl Ifcx {
     pub fn import_ifccad(&self, drawing: &IfccadDocument) -> Result<IfccadImportOutcome, Error> {
         ifccad::validate_ifccad_document(drawing)?;
         let mut losses = Losses::default();
+        font::preflight_font_requests(drawing, &mut losses)?;
         let mut document = Document::new();
         document.header.insertion_units = unit_code(&drawing.length_unit);
         let info = &mut document.summary_info;
@@ -978,7 +980,7 @@ impl Writer<'_> {
     }
 }
 
-/// Content omissions and separately staged retained-picture observations.
+/// Content omissions and separately staged retained-content observations.
 #[derive(Default)]
 struct Losses {
     content: BTreeMap<String, usize>,
