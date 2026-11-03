@@ -75,7 +75,8 @@ const TEMPLATE: &str = r#"{
         "ifccad::drawing": {
           "lengthUnit": "mm",
           "nextBlockId": 1,
-          "nextAnnotationScaleId": 1, "nextEntityId": 1,
+          "nextAnnotationScaleId": 1,
+          "nextEntityId": 1,
           "nextLayerId": 1,
           "nextLayoutId": 2,
           "nextLinePatternId": 1,
