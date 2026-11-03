@@ -1,22 +1,29 @@
 # IFCX annotation contexts
 
 This contribution maps the unpublished IFCCAD profile 0.4.0 / CBOR mapping 4.
-It requires the matching native model/reader and the HatchView SoftPointer codec
-fix. The existing manifest pins are deliberately retained until those sources
-are available as portable upstream revisions. Dependency pin updates are required before merge;
-an unpatched checkout with the old native dependency cannot build the new API.
+Its portable development dependencies are pinned exactly:
 
-The initial accepted development pair starts from Document
-`28f1ad1214816e6b5c21162b732df0604bdf38bd`, native
-`8367458a2976346fabab1659ad9ea5fcde8a19a0` plus the annotation contract, and codec
-`0a5542baa6052a2b07fc700b7ba041549650a997` plus the HatchView pointer correction.
-The native package version alone does not distinguish this development contract
-from the released profile 0.3.0. Use explicit local Cargo patches for both native
-and codec checkouts; do not edit Cargo's source cache. The contribution is now based on Document main
-`3a3676b12e824292bcf46b29f4eaf02d9264c3a4`, selecting codec `ef27529c` with
-the same explicit HatchView pointer correction. The full serde/IFCX suite is
-checked against that pair before submission. Explorer's accepted CAD review
-files and embedded-host build retain their separately recorded earlier pair.
+- Native `OpenAEC-Foundation/ifccad` commit
+  `100deb04052a298654a33446b509194ad0bc03bf`, based on main `908aed6b`.
+- Codec `BjornFidder/opencadcodec` commit
+  `4018037daf8fd3e40aa1aa6455b80232849a2756`, based on upstream
+  `HakanSeven12/acadrust` commit `7e7940f6fb17419629958ceeb79dfbd2d954dabb`,
+  with the HatchView SoftPointer correction and regression tests.
+
+These are public development revisions, not a native release. The native package
+version is unchanged from 2026.45.0, so its version number alone does not identify
+profile 0.4.0. A stock checkout uses the matching model without local path patches.
+The contribution incorporates Document main `598b1bb`; its intervening changes
+only advance the codec pin. The new TABLE/Field features are outside native IFCX
+coverage and do not expand this annotation slice.
+
+The initially accepted review files used Document `28f1ad1`, native `8367458`
+plus the annotation contract, and codec `0a5542b` plus the pointer correction,
+through explicit local Cargo patches. Intermediate qualification used Document
+`3a3676b` and codec `ef27529c` plus that correction. Those historical pairs remain
+separate from the portable pins above. Explorer's accepted review files and
+embedded-host bundle retain their recorded earlier pair. Never edit Cargo's
+source cache to substitute development code.
 
 ## Retained state
 
@@ -69,4 +76,9 @@ unstable handles. The compact `annotation_gallery` example reproduces the
 accepted CAD review files. Native and Explorer qualification remain distinct.
 The paired focused suite has 19 passing tests; the user accepted the small CAD
 roundtrips and reported opening/converting existing DWG/DXF in local Explorer.
-The embedded Studio rebuild and final integration gates are not claimed complete.
+The native source candidate passes its full workspace audit, fmt, Clippy and tests
+(629 passed, 2 existing ignored cases), plus the Explorer dependency guard and
+frontend tests. Portable Document tests pass with the final Git pins: default 4, serde 4,
+serde+IFCX 133, with no ignored tests. Fmt and all-target Clippy also pass. The separately accepted embedded Studio bundle retains its earlier
+recorded development pair; production host integration/deployment and editing
+qualification are not claimed complete.
