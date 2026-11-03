@@ -544,6 +544,7 @@ fn all_nine_definitions_and_pictures_keep_paper_and_nested_block_ownership() {
             let entities = std::mem::take(&mut source.model.entities);
             if paper {
                 source.paper_layouts.push(IfccadPaperLayout {
+                    annotation_state: None,
                     id: 2,
                     name: "Dimensions".into(),
                     tab_index: 1,
@@ -556,6 +557,7 @@ fn all_nine_definitions_and_pictures_keep_paper_and_nested_block_ownership() {
                 source.id_counters.next_layout_id = 3;
             } else {
                 source.blocks.push(IfccadBlockDefinition {
+                    annotation: Default::default(),
                     id: 1,
                     name: "DimensionCases".into(),
                     description: String::new(),
@@ -576,6 +578,7 @@ fn all_nine_definitions_and_pictures_keep_paper_and_nested_block_ownership() {
                 let mut nested = template.clone();
                 nested.id = 100;
                 nested.kind = IfccadEntityKind::BlockInstance {
+                    annotation: None,
                     definition_id: 1,
                     transform: IfccadBlockTransform {
                         placement: plane([10., 20., 3.]),
@@ -584,6 +587,7 @@ fn all_nine_definitions_and_pictures_keep_paper_and_nested_block_ownership() {
                     },
                 };
                 source.blocks.push(IfccadBlockDefinition {
+                    annotation: Default::default(),
                     id: 2,
                     name: "NestedCases".into(),
                     description: String::new(),
@@ -599,6 +603,7 @@ fn all_nine_definitions_and_pictures_keep_paper_and_nested_block_ownership() {
                 let mut outer = template;
                 outer.id = 101;
                 outer.kind = IfccadEntityKind::BlockInstance {
+                    annotation: None,
                     definition_id: 2,
                     transform: IfccadBlockTransform {
                         placement: plane([100., 200., 5.]),

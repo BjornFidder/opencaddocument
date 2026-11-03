@@ -278,10 +278,13 @@ fn canonical(
 /// Resource-only conversion context: never clone the drawing's entity graph.
 fn resources(d: &IfccadDocument) -> IfccadDocument {
     IfccadDocument {
+        annotation_settings: None,
         dimension_styles: d.dimension_styles.clone(),
         symbol_sources: d.symbol_sources.clone(),
         point_display: d.point_display,
         text_styles: d.text_styles.clone(),
+        annotation_views: vec![],
+        annotation_scales: vec![],
         ucs_definitions: vec![],
         model_windows: vec![],
         workspace_state: None,
@@ -296,6 +299,7 @@ fn resources(d: &IfccadDocument) -> IfccadDocument {
         line_pattern_scale: d.line_pattern_scale,
         layers: d.layers.clone(),
         model: IfccadLayout {
+            annotation_state: None,
             id: d.model.id,
             tab_index: d.model.tab_index,
             settings: d.model.settings.clone(),
@@ -309,6 +313,9 @@ fn resources(d: &IfccadDocument) -> IfccadDocument {
 }
 fn context<'a>(document: &'a Document, drawing: &IfccadDocument) -> Writer<'a> {
     Writer {
+        annotation_scales: HashMap::new(),
+        annotation_views: HashMap::new(),
+        model_window_handles: HashMap::new(),
         document,
         drawing: resources(drawing),
         losses: Losses::default(),

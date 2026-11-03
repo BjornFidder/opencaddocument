@@ -700,6 +700,7 @@ mod tests {
         };
         assert!(native(&a, &b, "p0", &mut PictureNumerics::default()).is_err());
         let a = IfccadEntityKind::BlockInstance {
+            annotation: None,
             definition_id: 1,
             transform: IfccadBlockTransform {
                 placement: p.clone(),
@@ -708,6 +709,7 @@ mod tests {
             },
         };
         let b = IfccadEntityKind::BlockInstance {
+            annotation: None,
             definition_id: 1,
             transform: IfccadBlockTransform {
                 placement: p,

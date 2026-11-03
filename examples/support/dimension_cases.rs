@@ -140,6 +140,7 @@ fn text(
 ) -> IfccadDimensionGraphicsKind {
     use ifccad::text::*;
     IfccadDimensionGraphicsKind::Text(IfccadText {
+        annotation: None,
         style_id,
         placement: plane(at),
         rotation: 0.,

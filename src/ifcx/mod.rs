@@ -32,6 +32,11 @@ use ifccad::{
 
 use crate::{Document, Error, Format, Loss, Placement};
 
+mod annotation;
+mod annotation_dimension;
+mod annotation_hatch;
+mod annotation_policy;
+mod annotation_views;
 mod dimension;
 mod dimension_graphics;
 mod dimension_kinds;
@@ -56,7 +61,7 @@ const TEMPLATE: &str = r#"{
     "author": "OpenCAD",
     "timestamp": "1970-01-01T00:00:00Z"
   },
-  "imports": [{ "uri": "urn:example:ifccad:0.3.0" }],
+  "imports": [{ "uri": "urn:example:ifccad:0.4.0" }],
   "schemas": {},
   "data": [
     {
@@ -69,12 +74,12 @@ const TEMPLATE: &str = r#"{
         "ifccad::drawing": {
           "lengthUnit": "mm",
           "nextBlockId": 1,
-          "nextEntityId": 1,
+          "nextAnnotationScaleId": 1, "nextEntityId": 1,
           "nextLayerId": 1,
           "nextLayoutId": 2,
           "nextLinePatternId": 1,
           "nextSymbolSourceId": 1,
-          "profileVersion": "0.3.0",
+          "profileVersion": "0.4.0",
           "nextUcsId": 1,
           "nextModelWindowId": 1
         }
@@ -213,6 +218,8 @@ impl Ifcx {
         }
 
         let mut names = Names::default();
+        annotation::read_scales(drawing, &mut document, &mut names);
+        annotation_views::import(drawing, &mut document, &mut names)?;
         tables::read(drawing, &mut document, &mut names, &mut losses)?;
 
         // Every definition exists before any member is converted, so inserts
@@ -243,6 +250,12 @@ impl Ifcx {
             let mut end = BlockEnd::new();
             end.common.handle = record.block_end_handle;
             end.common.owner_handle = record.handle;
+            annotation::import_definition(
+                block.annotation,
+                record.handle,
+                &mut document,
+                &mut losses,
+            )?;
             names.blocks.insert(block.id, block.name.clone());
             members.push((record.handle, &block.entities));
             document.block_records.add(record)?;
@@ -298,7 +311,10 @@ impl Ifcx {
                     .collect();
             }
         }
-        layout::finish(drawing, &mut document, &names, &papers, &handles)?;
+        layout::finish(drawing, &mut document, &mut names, &papers, &handles)?;
+        annotation_policy::import(drawing, &mut document, &names, &handles)?;
+        annotation_hatch::import_all(drawing, &mut document, &names, &handles, &mut losses)?;
+        annotation_dimension::import_all(drawing, &mut document, &names, &handles, &mut losses)?;
         dimension::associations_in(drawing, &mut document, &handles, &mut losses);
         Ok(IfccadImportOutcome {
             document,
@@ -352,6 +368,9 @@ impl Ifcx {
         drawing.drawing_id = get(DRAWING_ID).and_then(|id| id.parse().ok()).unwrap_or(1);
         drawing.length_unit = unit_name(document.header.insertion_units);
         let mut writer = Writer {
+            annotation_scales: HashMap::new(),
+            annotation_views: HashMap::new(),
+            model_window_handles: HashMap::new(),
             document,
             drawing,
             losses: Losses::default(),
@@ -370,6 +389,8 @@ impl Ifcx {
             dimension_sources: HashMap::new(),
         };
 
+        annotation::write_scales(&mut writer)?;
+        annotation_views::export(&mut writer)?;
         tables::write(&mut writer)?;
         dimension::write_styles(&mut writer)?;
 
@@ -405,6 +426,8 @@ impl Ifcx {
             );
         }
 
+        annotation_hatch::export_all(&mut writer)?;
+        annotation_policy::export(&mut writer)?;
         ifccad::validate_ifccad_document(&writer.drawing)?;
         Ok(IfccadExportOutcome {
             drawing: writer.drawing,
@@ -452,6 +475,9 @@ fn link_hatches(
 /// Names of what IFCX refers to by id.
 #[derive(Default)]
 struct Names {
+    annotation_views: HashMap<ifccad::IfccadAnnotationViewId, Handle>,
+    model_window_handles: HashMap<ifccad::IfccadModelWindowId, Handle>,
+    annotation_scales: HashMap<ifccad::IfccadAnnotationScaleId, Handle>,
     layers: HashMap<u64, String>,
     layer_handles: HashMap<u64, Handle>,
     /// Dimension styles: name, settings and per-kind overrides.
@@ -518,10 +544,15 @@ fn add_in(
             target.base_mut().block_name = name;
         }
     }
-    Ok(Some(document.add_entity(converted)?))
+    let handle = document.add_entity(converted)?;
+    annotation::import_entity(&entity.kind, handle, document, names, losses)?;
+    Ok(Some(handle))
 }
 
 struct Writer<'a> {
+    annotation_views: HashMap<Handle, ifccad::IfccadAnnotationViewId>,
+    model_window_handles: HashMap<Handle, ifccad::IfccadModelWindowId>,
+    annotation_scales: HashMap<Handle, ifccad::IfccadAnnotationScaleId>,
     document: &'a Document,
     drawing: IfccadDocument,
     losses: Losses,
@@ -572,6 +603,8 @@ impl Writer<'_> {
         {
             target.graphics = dimension_graphics::capture(self, source, &target.placement)?;
         }
+        annotation::export_entity(self, entity, &mut kind)?;
+        annotation_dimension::export_entity(self, entity, &mut kind)?;
         let common = entity.common();
         let layer_id = match self.layers.get(&common.layer.to_ascii_lowercase()) {
             Some(id) => *id,
@@ -628,7 +661,15 @@ impl Writer<'_> {
                 entities.push(entity);
             }
         }
+        let annotation = annotation::export_definition(
+            document,
+            record.handle,
+            Some(record.block_entity_handle),
+            None,
+            &mut self.losses,
+        )?;
         self.drawing.blocks.push(IfccadBlockDefinition {
+            annotation,
             description: record.description.clone(),
             anonymous: record.is_anonymous(),
             explodable: record.explodable,
@@ -894,6 +935,7 @@ impl Writer<'_> {
                     }
                 };
                 IfccadEntityKind::Text(IfccadText {
+                    annotation: None,
                     style_id,
                     placement: placement_out(origin, text.normal, frame),
                     rotation,
@@ -922,6 +964,7 @@ impl Writer<'_> {
                     self.losses.note("block attributes");
                 }
                 IfccadEntityKind::BlockInstance {
+                    annotation: None,
                     definition_id,
                     transform: IfccadBlockTransform {
                         placement: placement_out(insert.insert_point, insert.normal, 0.0),
@@ -1228,6 +1271,7 @@ fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Opt
         IfccadEntityKind::BlockInstance {
             definition_id,
             transform,
+            ..
         } => {
             let name = names.blocks.get(definition_id)?;
             let (origin, normal, frame) = placement_in(&transform.placement);

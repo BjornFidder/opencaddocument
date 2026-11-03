@@ -898,6 +898,7 @@ pub(super) fn mtext_out(writer: &mut Writer, mtext: &MText) -> Option<IfccadEnti
     };
     let background = background_out(mtext, &mut writer.losses);
     let mut converted = IfccadMText {
+        annotation: None,
         style_id,
         placement,
         rotation: 0.0,

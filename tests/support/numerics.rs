@@ -317,6 +317,7 @@ fn block(
     unit: &str,
 ) -> IfccadBlockDefinition {
     IfccadBlockDefinition {
+        annotation: Default::default(),
         id,
         name,
         description: String::new(),
@@ -442,6 +443,7 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
                 },
             )),
             part(IfccadDimensionGraphicsKind::Text(IfccadText {
+                annotation: None,
                 style_id,
                 placement: p.clone(),
                 rotation: 0.,
@@ -463,6 +465,7 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
                 }],
             })),
             part(IfccadDimensionGraphicsKind::MText(Box::new(IfccadMText {
+                annotation: None,
                 style_id,
                 placement: p,
                 rotation: 0.,
@@ -572,6 +575,7 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
             &mut d,
             &template,
             IfccadEntityKind::BlockInstance {
+                annotation: None,
                 definition_id: 20,
                 transform: IfccadBlockTransform {
                     placement: identity([0.; 3]),
@@ -606,6 +610,7 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
             &mut d,
             &template,
             IfccadEntityKind::BlockInstance {
+                annotation: None,
                 definition_id: id,
                 transform: IfccadBlockTransform {
                     placement: IfccadPlacement {
@@ -779,6 +784,7 @@ pub fn native_world(d: &IfccadDocument) -> Observation {
             IfccadEntityKind::BlockInstance {
                 definition_id,
                 transform,
+                ..
             } => {
                 let b = d.blocks.iter().find(|b| b.id == *definition_id).unwrap();
                 let child = t.then(frame(&transform.placement).block(

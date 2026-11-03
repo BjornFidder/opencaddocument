@@ -73,6 +73,7 @@ pub(super) fn read(
         }
         converted.flags.backward = properties.creation_backward;
         converted.flags.upside_down = properties.creation_upside_down;
+        converted.annotative = style.annotation.enabled;
         let handle = match document.text_styles.get_mut(&style.name) {
             Some(existing) => {
                 converted.handle = existing.handle;
@@ -86,6 +87,9 @@ pub(super) fn read(
                 handle
             }
         };
+        if style.annotation.orientation == ifccad::IfccadAnnotationOrientation::MatchLayout {
+            annotation::import_orientation(style.annotation.orientation, handle, document)?;
+        }
         names.style_handles.insert(style.id, handle);
     }
 
@@ -256,7 +260,15 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
         let id = writer.drawing.id_counters.allocate_text_style_id()?;
         writer.styles.insert(style.name.to_ascii_lowercase(), id);
         writer.style_handles.insert(style.handle, id);
+        let annotation = annotation::export_definition(
+            document,
+            style.handle,
+            None,
+            Some(style.annotative),
+            &mut writer.losses,
+        )?;
         writer.drawing.text_styles.push(IfccadTextStyle {
+            annotation,
             id,
             name: style.name.clone(),
             properties,

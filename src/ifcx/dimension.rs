@@ -25,9 +25,9 @@ use ifccad::dimension::{
     DimensionDistanceFormat, DimensionExtensionLength, DimensionFactorApplication,
     DimensionFitPlacement, DimensionFractionLayout, DimensionLabel, DimensionLabelPart,
     DimensionLineSpacing, DimensionMarker, DimensionMeasurement, DimensionPadding,
-    DimensionPointSelector, DimensionRole, DimensionStyleSettings, DimensionTextMovement,
-    DimensionTextOrientation, DimensionTextPlacement, DimensionToleranceSettings,
-    DimensionZeroSuppression,
+    DimensionPointSelector, DimensionPresentationScale, DimensionRole, DimensionStyleSettings,
+    DimensionTextMovement, DimensionTextOrientation, DimensionTextPlacement,
+    DimensionToleranceSettings, DimensionZeroSuppression,
 };
 use ifccad::text::MTextAttachment;
 use ifccad::{
@@ -192,11 +192,19 @@ fn settings_out(style: &DimStyle, writer: &mut Writer) -> Option<IfccadDimension
     let text_style_id = *writer.style_handles.get(&text_style.handle)?;
     let mut lost = Vec::new();
     let mut v = DimensionStyleSettings::new(text_style_id);
-    v.presentation_scale = match style.dimscale {
-        scale if scale > 0.0 => scale,
-        _ => {
-            lost.push("scale to viewport (DIMSCALE 0)");
-            1.0
+    v.presentation_scale = if style.annotative {
+        DimensionPresentationScale::ByAnnotationScale {
+            dormant_factor: if style.dimscale == 0. {
+                None
+            } else {
+                Some(style.dimscale)
+            },
+        }
+    } else if style.dimscale == 0. {
+        DimensionPresentationScale::ByViewport
+    } else {
+        DimensionPresentationScale::Fixed {
+            factor: style.dimscale,
         }
     };
     v.dimension_line.extension = style.dimdle;
@@ -386,9 +394,6 @@ fn settings_out(style: &DimStyle, writer: &mut Writer) -> Option<IfccadDimension
         },
         (false, false) => DimensionToleranceSettings::None,
     };
-    if style.annotative {
-        lost.push("annotative scaling");
-    }
     for what in lost {
         writer
             .losses
@@ -417,7 +422,13 @@ fn style_in(
         .get(name)
         .cloned()
         .unwrap_or_else(|| DimStyle::new(name));
-    style.dimscale = v.presentation_scale;
+    style.dimscale = match v.presentation_scale {
+        DimensionPresentationScale::Fixed { factor } => factor,
+        DimensionPresentationScale::ByViewport => 0.,
+        DimensionPresentationScale::ByAnnotationScale { dormant_factor } => {
+            dormant_factor.unwrap_or(0.)
+        }
+    };
     style.dimdle = v.dimension_line.extension;
     style.dimsd1 = v.dimension_line.suppress_first;
     style.dimsd2 = v.dimension_line.suppress_second;
@@ -776,6 +787,7 @@ pub(super) fn write_styles(writer: &mut Writer) -> Result<(), Error> {
             .dim_styles
             .insert(key.clone(), (id, settings.clone()));
         writer.drawing.dimension_styles.push(IfccadDimensionStyle {
+            annotative: style.annotative,
             id,
             name: style.name.clone(),
             settings,
@@ -800,6 +812,17 @@ pub(super) fn read_styles(
             ));
         }
         let mut converted = style_in(&style.name, &style.settings, names, document);
+        let annotation_sizing = matches!(
+            style.settings.presentation_scale,
+            DimensionPresentationScale::ByAnnotationScale { .. }
+        );
+        if style.annotative != annotation_sizing {
+            losses.note(format!(
+                "dimension style {} sizing intent conflicts with its saved annotative flag in CAD",
+                style.name
+            ));
+        }
+        converted.annotative = style.annotative;
         match document.dim_styles.get_mut(&style.name) {
             Some(existing) => {
                 converted.handle = existing.handle;
@@ -982,6 +1005,7 @@ pub(super) fn dimension_out(
             .insert(base.common.handle, associations);
     }
     Some(IfccadEntityKind::Dimension(Box::new(IfccadDimension {
+        annotation: None,
         placement: placement_out(origin, normal, 0.0),
         style_id,
         definition,

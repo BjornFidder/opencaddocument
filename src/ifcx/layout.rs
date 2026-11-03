@@ -84,6 +84,7 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
         }
         tab_index += 1;
         writer.drawing.paper_layouts.push(IfccadPaperLayout {
+            annotation_state: None,
             bounds_quality: None,
             canvas,
             id,
@@ -104,6 +105,7 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
             writer.losses.note("a model window");
             continue;
         };
+        writer.model_window_handles.insert(vport.handle, window.id);
         writer.drawing.model_windows.push(window);
     }
     if let [window] = writer.drawing.model_windows.as_slice() {
@@ -181,6 +183,7 @@ pub(super) fn viewport_out(writer: &mut Writer, viewport: &Viewport) -> Option<I
         .collect();
     let status = &viewport.status;
     let converted = IfccadViewport {
+        annotation_scale_id: None,
         workspace: aids_out(viewport, writer).map(|(grid, snap, stored_ucs)| {
             Box::new(IfccadViewportWorkspace {
                 grid,
@@ -624,7 +627,7 @@ pub(super) fn read(
 pub(super) fn finish(
     drawing: &IfccadDocument,
     document: &mut Document,
-    names: &Names,
+    names: &mut Names,
     owners: &[Handle],
     handles: &HashMap<u64, Handle>,
 ) -> Result<(), Error> {
@@ -698,6 +701,7 @@ pub(super) fn finish(
             let mut vport = VPort::active();
             vport.handle = document.allocate_handle();
             model_window_in(window, ucs, &mut vport);
+            names.model_window_handles.insert(window.id, vport.handle);
             vports.push(vport);
         }
         document.vports.clear();

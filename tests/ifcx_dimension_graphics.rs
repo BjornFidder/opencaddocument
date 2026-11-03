@@ -259,6 +259,7 @@ fn a_single_stored_picture_reports_one_loss_for_either_origin() {
 fn stored_dimension_graphics_in_block_members_report_loss() {
     let mut source = load(GRAPHICS);
     source.blocks.push(IfccadBlockDefinition {
+        annotation: Default::default(),
         id: 1,
         name: "Dimensions".to_string(),
         description: String::new(),
@@ -280,6 +281,7 @@ fn stored_dimension_graphics_in_block_members_report_loss() {
 fn stored_dimension_graphics_in_paper_layouts_report_loss() {
     let mut source = load(GRAPHICS);
     source.paper_layouts.push(IfccadPaperLayout {
+        annotation_state: None,
         id: 2,
         name: "Dimensions".to_string(),
         tab_index: 1,
