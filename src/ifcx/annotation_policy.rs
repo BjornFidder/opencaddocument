@@ -313,17 +313,22 @@ pub(super) fn export(writer: &mut Writer) -> Result<(), Error> {
         }),
     }
     .into_option();
-    let current = variable(document, "CANNOSCALE")?
-        .map(|name| {
+    // A drawing that names a current scale its scale list lacks (one made
+    // without a SCALE object for it) has no current scale to send.
+    let current = variable(document, "CANNOSCALE")?.and_then(|name| {
+        let id = writer
+            .drawing
+            .annotation_scales
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.id);
+        if id.is_none() {
             writer
-                .drawing
-                .annotation_scales
-                .iter()
-                .find(|s| s.name == name)
-                .map(|s| s.id)
-                .ok_or_else(|| invalid("unresolved Model CANNOSCALE name"))
-        })
-        .transpose()?;
+                .losses
+                .note("a current annotation scale missing from the scale list");
+        }
+        id
+    });
     let global_visibility = flag(document, "ANNOALLVISIBLE")?.map(|v| {
         if v {
             IfccadAnnotationVisibility::All
