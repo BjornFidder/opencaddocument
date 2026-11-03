@@ -381,6 +381,60 @@ fn primitive_text_and_width_families_transfer_as_one_complete_picture() {
 }
 
 #[test]
+fn font_metadata_notice_keeps_picture_text_and_preflight_checks_picture_requests() {
+    let mut drawing = source();
+    drawing.text_styles[0].properties.font = ifccad::text::FontRequest::family("Review Family");
+    let parts = simple_parts(&drawing);
+    dimension_mut(&mut drawing).graphics = Some(graphics(parts));
+    let converted = Ifcx.import_ifccad(&drawing).unwrap();
+    assert!(converted
+        .losses
+        .iter()
+        .any(|l| l.message.contains("unspecified STYLE face fields")));
+    let restored = Ifcx.export_ifccad(&converted.document).unwrap().drawing;
+    let picture = dimension(&restored).graphics.as_ref().unwrap();
+    assert_eq!(
+        picture.parts.len(),
+        dimension(&drawing).graphics.as_ref().unwrap().parts.len()
+    );
+    let IfccadDimensionGraphicsKind::MText(text) = &picture.parts.last().unwrap().kind else {
+        panic!()
+    };
+    assert_eq!(
+        text.content,
+        match &dimension(&drawing)
+            .graphics
+            .as_ref()
+            .unwrap()
+            .parts
+            .last()
+            .unwrap()
+            .kind
+        {
+            IfccadDimensionGraphicsKind::MText(t) => t.content.clone(),
+            _ => panic!(),
+        }
+    );
+    let IfccadDimensionGraphicsKind::MText(text) = &mut dimension_mut(&mut drawing)
+        .graphics
+        .as_mut()
+        .unwrap()
+        .parts
+        .last_mut()
+        .unwrap()
+        .kind
+    else {
+        panic!()
+    };
+    text.character_format.font = Some(ifccad::text::FontRequest::family("A|B"));
+    let error = Ifcx.import_ifccad(&drawing).err().unwrap().to_string();
+    assert!(
+        error.contains("/graphics/parts/") && error.contains("/characterFormat/font/family"),
+        "{error}"
+    );
+}
+
+#[test]
 fn five_thick_primitive_families_survive_saved_picture_file_readback() {
     let mut drawing = source();
     let mut parts = simple_parts(&drawing);

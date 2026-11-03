@@ -443,7 +443,7 @@ dependencies = [
 [[package]]
 name = "ifccad"
 version = "2026.45.0"
-source = "git+https://github.com/OpenAEC-Foundation/ifccad.git?rev=100deb04052a298654a33446b509194ad0bc03bf#100deb04052a298654a33446b509194ad0bc03bf"
+source = "git+https://github.com/OpenAEC-Foundation/ifccad.git?rev=0e8f5e6175c236f0bbef6466da7dd1aff5834045#0e8f5e6175c236f0bbef6466da7dd1aff5834045"
 dependencies = [
  "base64",
  "fpmath",

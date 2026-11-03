@@ -9,7 +9,7 @@ use ifccad::line_pattern::{
     validate_line_pattern_transform, validate_line_pattern_values, LinePatternElement,
     LinePatternRotation, LinePatternTransform, SymbolSource,
 };
-use ifccad::text::{FontRequest, TextStyleProperties};
+use ifccad::text::TextStyleProperties;
 use ifccad::{
     IfccadLayer, IfccadLayerAppearance, IfccadLinePattern, IfccadLinePatternId,
     IfccadLinePatternMarker, IfccadModelViewState, IfccadPointDisplay, IfccadPointGlyph,
@@ -32,24 +32,21 @@ pub(super) fn read(
     }
 
     for source in &drawing.symbol_sources {
-        let SymbolSource::Shx { file_name } = &source.source;
-        let existing = document
-            .text_styles
-            .iter()
-            .find(|style| style.is_shape_file && style.font_file.eq_ignore_ascii_case(file_name))
-            .map(|style| style.handle);
-        let handle = match existing {
-            Some(handle) => handle,
-            None => {
-                let mut style = TextStyle::new("");
-                style.handle = document.allocate_handle();
-                style.is_shape_file = true;
-                style.font_file = file_name.clone();
-                let handle = style.handle;
-                document.text_styles.add_allow_duplicate(style);
-                handle
+        let mut style = TextStyle::new("");
+        style.handle = document.allocate_handle();
+        style.is_shape_file = true;
+        style.font_file = source.source.effective_cad_file_name().to_owned();
+        let handle = style.handle;
+        if let SymbolSource::Shx {
+            file_name,
+            cad_file_name: Some(request),
+        } = &source.source
+        {
+            if file_name == request {
+                losses.retained_note(Loss { handle:None, message:format!("/cad/d{}/symbolSource/{}/cadFileName: redundant authored presence is not represented in CAD; request retained", drawing.drawing_id, source.id.0) });
             }
-        };
+        }
+        document.text_styles.add_allow_duplicate(style);
         names.symbols.insert(source.id, handle);
     }
 
@@ -61,9 +58,12 @@ pub(super) fn read(
             .get(&style.name)
             .cloned()
             .unwrap_or_else(|| TextStyle::new(style.name.clone()));
-        converted.font_file = properties.font.cad_font_name.clone().unwrap_or_default();
-        converted.big_font_file = properties.font.big_font_name.clone().unwrap_or_default();
-        converted.true_type_font = properties.font.family.clone().unwrap_or_default();
+        font::font_to_cad_style(
+            &properties.font,
+            &mut converted,
+            &format!("/cad/d{}/textStyle/{}/font", drawing.drawing_id, style.id.0),
+            losses,
+        )?;
         converted.width_factor = properties.width_factor;
         converted.oblique_angle = properties.oblique_angle;
         converted.is_vertical = properties.vertical;
@@ -218,13 +218,12 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
         .iter()
         .filter(|style| style.is_shape_file)
     {
-        let file_name = style.font_file.rsplit(['/', '\\']).next().unwrap_or("");
+        let file_name = ifccad::line_pattern::shx_file_name_from_cad_request(&style.font_file)
+            .map_err(|error| format!("invalid SHX STYLE {:?}: {error}", style.handle))?;
         let source = SymbolSource::Shx {
-            file_name: file_name.to_string(),
+            file_name: file_name.to_owned(),
+            cad_file_name: (file_name != style.font_file).then(|| style.font_file.clone()),
         };
-        if ifccad::line_pattern::validate_symbol_source(&source).is_err() {
-            continue;
-        }
         let id = writer.drawing.id_counters.allocate_symbol_source_id()?;
         writer.symbols.insert(style.handle, id);
         writer
@@ -237,16 +236,13 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
         if style.is_shape_file || style.name.is_empty() {
             continue;
         }
-        let optional = |name: &String| (!name.is_empty()).then(|| name.clone());
-        let mut font = FontRequest {
-            family: optional(&style.true_type_font),
-            cad_font_name: optional(&style.font_file),
-            big_font_name: optional(&style.big_font_file),
-            ..Default::default()
-        };
-        if font.cad_font_name.is_none() && (font.family.is_none() || font.big_font_name.is_some()) {
-            font.cad_font_name = Some("txt".to_string());
-        }
+        let font = font::font_from_cad_style(
+            style,
+            &format!("STYLE {:?}/font", style.handle),
+            &mut writer.losses,
+        )?;
+        ifccad::text::validate_font_request(&font)
+            .map_err(|error| format!("STYLE {:?}/font: {error}", style.handle))?;
         let mut properties = TextStyleProperties::new(font);
         if style.width_factor > 0.0 {
             properties.width_factor = style.width_factor;
@@ -280,6 +276,25 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
         let key = linetype.name.to_ascii_lowercase();
         if key == "bylayer" || key == "byblock" {
             continue;
+        }
+        for (index, element) in linetype.elements.iter().enumerate() {
+            if let Some(complex) = &element.complex {
+                let resolved = match complex.content {
+                    LineTypeComplexContent::Shape { .. } => {
+                        writer.symbols.contains_key(&complex.style_handle)
+                    }
+                    LineTypeComplexContent::Text { .. } => {
+                        writer.style_handles.contains_key(&complex.style_handle)
+                    }
+                };
+                if !resolved {
+                    return Err(format!(
+                        "LTYPE {:?}/elements/{index}: missing or wrong-role STYLE {:?}",
+                        linetype.handle, complex.style_handle
+                    )
+                    .into());
+                }
+            }
         }
         let mut pattern = Vec::new();
         for element in &linetype.elements {

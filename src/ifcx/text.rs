@@ -727,7 +727,7 @@ fn format_codes(format: &Format) -> String {
         };
         if !code.is_empty() {
             out.push_str(code);
-            out.push_str(&name.replace(['|', ';', '\\', '{', '}'], ""));
+            out.push_str(name);
             for (flag, value) in [("b", font.bold), ("i", font.italic)] {
                 if let Some(value) = value {
                     out.push_str(&format!("|{flag}{}", u8::from(value)));

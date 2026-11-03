@@ -15,7 +15,7 @@ ifcx = ["dep:ifccad", "dep:web-time"]
 acadrust = { git = "https://github.com/BjornFidder/opencadcodec.git", rev = "4018037daf8fd3e40aa1aa6455b80232849a2756" }
 serde = { version = "1", features = ["derive"], optional = true }
 # ifccad only reads and writes IFCX; the mapping to `Document` lives here.
-ifccad = { git = "https://github.com/OpenAEC-Foundation/ifccad.git", rev = "100deb04052a298654a33446b509194ad0bc03bf", optional = true }
+ifccad = { git = "https://github.com/OpenAEC-Foundation/ifccad.git", rev = "0e8f5e6175c236f0bbef6466da7dd1aff5834045", optional = true }
 web-time = { version = "1", optional = true }
 
 [dev-dependencies]
@@ -25,4 +25,8 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 
 [[example]]
 name = "annotation_gallery"
+required-features = ["ifcx"]
+
+[[example]]
+name = "font_symbol_review"
 required-features = ["ifcx"]
