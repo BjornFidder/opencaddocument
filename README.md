@@ -40,8 +40,7 @@ With the `ifcx` feature, the `Ifcx` format reads and writes IFCX through
   properties, so a drawing read from IFCX is written back as the same drawing.
 
 DWG and DXF reading and writing come from
-[acadrust](https://github.com/HakanSeven12/acadrust), a fork of the
-upstream acadrust crate.
+[acadrust](https://github.com/hakanaktt/acadrust).
 
 ## Logical IFCCAD conversion
 

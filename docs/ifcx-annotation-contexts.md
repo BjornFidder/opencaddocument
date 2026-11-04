@@ -7,7 +7,7 @@ Its portable development dependencies are pinned exactly:
   `100deb04052a298654a33446b509194ad0bc03bf`, based on main `908aed6b`.
 - Codec `BjornFidder/opencadcodec` commit
   `4018037daf8fd3e40aa1aa6455b80232849a2756`, based on upstream
-  `HakanSeven12/acadrust` commit `7e7940f6fb17419629958ceeb79dfbd2d954dabb`,
+  `hakanaktt/acadrust` commit `7e7940f6fb17419629958ceeb79dfbd2d954dabb`,
   with the HatchView SoftPointer correction and regression tests.
 
 These are public development revisions, not a native release. The native package
