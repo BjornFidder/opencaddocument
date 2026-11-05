@@ -578,6 +578,7 @@ fn all_nine_definitions_and_pictures_keep_paper_and_nested_block_ownership() {
                 let mut nested = template.clone();
                 nested.id = 100;
                 nested.kind = IfccadEntityKind::BlockInstance {
+                    attributes: Vec::new(),
                     annotation: None,
                     definition_id: 1,
                     transform: IfccadBlockTransform {
@@ -603,6 +604,7 @@ fn all_nine_definitions_and_pictures_keep_paper_and_nested_block_ownership() {
                 let mut outer = template;
                 outer.id = 101;
                 outer.kind = IfccadEntityKind::BlockInstance {
+                    attributes: Vec::new(),
                     annotation: None,
                     definition_id: 2,
                     transform: IfccadBlockTransform {

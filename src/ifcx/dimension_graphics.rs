@@ -278,6 +278,7 @@ fn canonical(
 /// Resource-only conversion context: never clone the drawing's entity graph.
 fn resources(d: &IfccadDocument) -> IfccadDocument {
     IfccadDocument {
+        attribute_visibility: Default::default(),
         annotation_settings: None,
         dimension_styles: d.dimension_styles.clone(),
         symbol_sources: d.symbol_sources.clone(),

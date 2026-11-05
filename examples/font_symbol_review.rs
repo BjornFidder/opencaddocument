@@ -152,7 +152,7 @@ fn main() -> Result<(), Error> {
     std::fs::write(output.join("drawing.ifcx"), encoded.bytes())?;
     std::fs::write(output.join("drawing.ifccad.cbor"), cbor.bytes())?;
     let before = projection(&native);
-    let mut report = json!({"inputName":input.file_name().unwrap().to_string_lossy(),"profile":"0.5.0","cborRevision":5,
+    let mut report = json!({"inputName":input.file_name().unwrap().to_string_lossy(),"profile":"0.6.0","cborRevision":6,
         "sourceReader":source_reader,"sourceMappingDiagnostics":source_losses,"nativeToCadDiagnostics":losses(&converted.losses),
         "before":before,"targets":[],"scope":"Font/SHX requests and source bindings; ordinary geometry and rendering not certified by this projection"});
     let mut equal = true;

@@ -35,7 +35,11 @@ With the `ifcx` feature, the `Ifcx` format reads and writes IFCX through
   diagnostic list. No graphics are regenerated. See the
   [picture coverage and preservation limits](docs/ifcx-dimension-graphics.md).
 - What IFCX has no place for is reported as a loss: unsupported dimension state,
-  splines, 3D solids and the like, raster sheets, attributes.
+  splines, 3D solids and the like, and raster sheets.
+- The block-attribute mapping covers ATTDEF and ordered INSERT-owned
+  ATTRIB, including active MText, selected fields and annotation contexts. It
+  pins the matching native/codec development revisions; see
+  [block-attribute coverage and dependencies](docs/ifcx-block-attributes.md).
 - An IFCX file's identity (header id, drawing id) rides on custom document
   properties, so a drawing read from IFCX is written back as the same drawing.
 

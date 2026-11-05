@@ -33,10 +33,13 @@ use ifccad::{
 use crate::{Document, Error, Format, Loss, Placement};
 
 mod annotation;
+mod annotation_attributes;
 mod annotation_dimension;
 mod annotation_hatch;
 mod annotation_policy;
 mod annotation_views;
+mod attribute_fields;
+mod attributes;
 mod dimension;
 mod dimension_graphics;
 mod dimension_kinds;
@@ -62,7 +65,7 @@ const TEMPLATE: &str = r#"{
     "author": "OpenCAD",
     "timestamp": "1970-01-01T00:00:00Z"
   },
-  "imports": [{ "uri": "urn:example:ifccad:0.5.0" }],
+  "imports": [{ "uri": "urn:example:ifccad:0.6.0" }],
   "schemas": {},
   "data": [
     {
@@ -81,7 +84,7 @@ const TEMPLATE: &str = r#"{
           "nextLayoutId": 2,
           "nextLinePatternId": 1,
           "nextSymbolSourceId": 1,
-          "profileVersion": "0.5.0",
+          "profileVersion": "0.6.0",
           "nextUcsId": 1,
           "nextModelWindowId": 1
         }
@@ -200,6 +203,11 @@ impl Ifcx {
         font::preflight_font_requests(drawing, &mut losses)?;
         let mut document = Document::new();
         document.header.insertion_units = unit_code(&drawing.length_unit);
+        document.header.attribute_visibility = match drawing.attribute_visibility {
+            ifccad::IfccadAttributeVisibility::Normal => 1,
+            ifccad::IfccadAttributeVisibility::HideAll => 0,
+            ifccad::IfccadAttributeVisibility::ShowAll => 2,
+        };
         let info = &mut document.summary_info;
         set(
             &mut info.custom_properties,
@@ -284,6 +292,28 @@ impl Ifcx {
                 }
             }
         }
+        for e in drawing
+            .model
+            .entities
+            .iter()
+            .chain(drawing.paper_layouts.iter().flat_map(|p| &p.entities))
+            .chain(drawing.blocks.iter().flat_map(|b| &b.entities))
+            .filter_map(|e| e.as_native())
+        {
+            if let IfccadEntityKind::BlockInstance { attributes, .. } = &e.kind {
+                if let Some(handle) = handles.get(&e.id).copied() {
+                    attributes::children_in(
+                        &mut document,
+                        handle,
+                        attributes,
+                        &names,
+                        &mut losses,
+                        &mut handles,
+                    )?;
+                }
+            }
+        }
+        attributes::finish_import(drawing, &mut document, &names, &handles, &mut losses)?;
         // Hatch boundaries refer to entities that may come after them.
         let scopes = drawing.blocks.iter().map(|block| &block.entities);
         let papers_entities = drawing.paper_layouts.iter().map(|paper| &paper.entities);
@@ -370,6 +400,12 @@ impl Ifcx {
         };
         drawing.drawing_id = get(DRAWING_ID).and_then(|id| id.parse().ok()).unwrap_or(1);
         drawing.length_unit = unit_name(document.header.insertion_units);
+        drawing.attribute_visibility = match document.header.attribute_visibility {
+            0 => ifccad::IfccadAttributeVisibility::HideAll,
+            1 => ifccad::IfccadAttributeVisibility::Normal,
+            2 => ifccad::IfccadAttributeVisibility::ShowAll,
+            _ => return Err(annotation::invalid("invalid ATTMODE")),
+        };
         let mut writer = Writer {
             annotation_scales: HashMap::new(),
             annotation_views: HashMap::new(),
@@ -431,6 +467,7 @@ impl Ifcx {
 
         annotation_hatch::export_all(&mut writer)?;
         annotation_policy::export(&mut writer)?;
+        attributes::finish_export(&mut writer)?;
         ifccad::validate_ifccad_document(&writer.drawing)?;
         Ok(IfccadExportOutcome {
             drawing: writer.drawing,
@@ -869,6 +906,10 @@ impl Writer<'_> {
                     false => IfccadEntityKind::Solid(quadrilateral),
                 }
             }
+            EntityType::AttributeDefinition(a) => {
+                return Ok(attributes::definition_out(self, a)?
+                    .map(|v| IfccadEntityKind::AttributeDefinition(Box::new(v))))
+            }
             EntityType::Text(text) => {
                 let Some(&style_id) = self.styles.get(&text.style.to_ascii_lowercase()) else {
                     return Ok(None);
@@ -963,10 +1004,9 @@ impl Writer<'_> {
                 let Some(definition_id) = self.block(&insert.block_name)? else {
                     return Ok(None);
                 };
-                if insert.has_attributes() {
-                    self.losses.note("block attributes");
-                }
+                let attributes = attributes::children_out(self, insert)?;
                 IfccadEntityKind::BlockInstance {
+                    attributes,
                     annotation: None,
                     definition_id,
                     transform: IfccadBlockTransform {
@@ -1039,6 +1079,9 @@ impl Losses {
 
 fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Option<EntityType> {
     Some(match kind {
+        IfccadEntityKind::AttributeDefinition(a) => {
+            return attributes::definition_in(a, names, losses)
+        }
         IfccadEntityKind::LineSegment {
             start,
             end,

@@ -107,15 +107,13 @@ pub(super) fn import<P>(
     if a.orientation.is_some() {
         ensure_paper_app(document)?;
     }
-    let entity = document
-        .get_entity_mut(owner)
+    let common = super::attributes::common_mut(document, owner)
         .ok_or_else(|| invalid("missing annotation owner"))?;
     if let Some(flag) = flag {
-        entity.common_mut().extended_data.upsert_record(flag);
+        common.extended_data.upsert_record(flag);
     }
     if let Some(orientation) = a.orientation {
-        entity
-            .common_mut()
+        common
             .extended_data
             .upsert_record(paper_record(orientation));
     }
@@ -123,6 +121,9 @@ pub(super) fn import<P>(
         return Ok(());
     }
     let extension = document.ensure_extension_dictionary(owner);
+    super::attributes::common_mut(document, owner)
+        .ok_or_else(|| invalid("missing attribute annotation owner"))?
+        .xdictionary_handle = Some(extension);
     let manager = child_dictionary(document, extension, "AcDbContextDataManager");
     let collection = child_dictionary(document, manager, "ACDB_ANNOTATIONSCALES");
     for (index, c) in a.contexts.iter().enumerate() {
@@ -261,7 +262,7 @@ pub(super) fn export<P>(
     }
     Ok(Some(Box::new(out)))
 }
-fn horizontal(value: i16) -> Result<IfccadTextAnnotationHorizontal, Error> {
+pub(super) fn horizontal(value: i16) -> Result<IfccadTextAnnotationHorizontal, Error> {
     use IfccadTextAnnotationHorizontal::*;
     match value {
         0 => Ok(Left),
@@ -273,7 +274,7 @@ fn horizontal(value: i16) -> Result<IfccadTextAnnotationHorizontal, Error> {
         _ => Err(invalid("invalid Text annotation horizontal mode")),
     }
 }
-fn horizontal_code(value: IfccadTextAnnotationHorizontal) -> i16 {
+pub(super) fn horizontal_code(value: IfccadTextAnnotationHorizontal) -> i16 {
     use IfccadTextAnnotationHorizontal::*;
     match value {
         Left => 0,
@@ -314,7 +315,7 @@ pub(super) fn local(p: Vector3, frame: &IfccadPlacement, point: bool) -> [f64; 3
     let z = x.cross(&y);
     [delta.dot(&x), delta.dot(&y), delta.dot(&z)]
 }
-fn attachment(value: i32) -> Result<MTextAttachment, Error> {
+pub(super) fn attachment(value: i32) -> Result<MTextAttachment, Error> {
     use MTextAttachment::*;
     match value {
         1 => Ok(TopLeft),
@@ -329,7 +330,7 @@ fn attachment(value: i32) -> Result<MTextAttachment, Error> {
         _ => Err(invalid("invalid MText annotation attachment")),
     }
 }
-fn attachment_code(value: MTextAttachment) -> i32 {
+pub(super) fn attachment_code(value: MTextAttachment) -> i32 {
     use MTextAttachment::*;
     match value {
         TopLeft => 1,
@@ -355,6 +356,7 @@ pub(super) fn import_entity(
             definition_id,
             transform,
             annotation: Some(a),
+            ..
         } => {
             let mut a = a.as_ref().clone();
             if a.mode == IfccadAnnotationMode::ByDefinition && !a.contexts.is_empty() {

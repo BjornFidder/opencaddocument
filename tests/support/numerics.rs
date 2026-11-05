@@ -575,6 +575,7 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
             &mut d,
             &template,
             IfccadEntityKind::BlockInstance {
+                attributes: Vec::new(),
                 annotation: None,
                 definition_id: 20,
                 transform: IfccadBlockTransform {
@@ -610,6 +611,7 @@ pub fn native_source(case: &SpatialCase) -> IfccadDocument {
             &mut d,
             &template,
             IfccadEntityKind::BlockInstance {
+                attributes: Vec::new(),
                 annotation: None,
                 definition_id: id,
                 transform: IfccadBlockTransform {
