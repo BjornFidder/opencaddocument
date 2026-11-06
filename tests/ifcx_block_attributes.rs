@@ -15,14 +15,12 @@ fn drawing() -> (Document, Handle, Handle) {
     doc.block_records.add(record).unwrap();
     let mut def = AttributeDefinition::new("CODE".into(), "Door code".into(), "default".into());
     def.common.owner_handle = owner;
-    def.thickness = -2.;
     def.flags.verify = true;
     let def = doc
         .add_entity(EntityType::AttributeDefinition(def))
         .unwrap();
     let mut value = AttributeEntity::simple("RENAMED", "D-101");
     value.attdef_handle = def;
-    value.thickness = 3.;
     value.insertion_point = Vector3::new(101., 202., 0.);
     value.flags.invisible = true;
     value.lock_position = true;
@@ -57,7 +55,7 @@ fn definitions_values_and_reliable_binding_map_both_directions() {
     assert_eq!(attributes[0].value.tag, "RENAMED");
     assert_eq!(attributes[0].value.definition_id, Some(def_id));
     assert_eq!(attributes[0].value.text.placement.origin, [101., 202., 0.]);
-    assert_eq!(attributes[0].value.text.thickness, 3.);
+    assert_eq!(attributes[0].value.text.thickness, 0.);
     assert!(attributes[0].value.flags.invisible);
     assert!(attributes[0].value.lock_position);
     assert!(attributes[0].visible, "separate common visibility");
@@ -81,7 +79,6 @@ fn definitions_values_and_reliable_binding_map_both_directions() {
         i.attributes[0].attdef_handle,
         returned.entity_handles[&def_id]
     );
-    assert_eq!(i.attributes[0].thickness, 3.);
 }
 
 #[test]
@@ -165,7 +162,6 @@ fn attributes_survive_physical_cad_and_strict_native_readback() {
             })
             .unwrap();
         assert_eq!(a.value.tag, "RENAMED", "{format}");
-        assert_eq!(a.value.text.thickness, 3., "{format}");
         assert_eq!(a.value.text.placement.origin, [101., 202., 0.], "{format}");
         assert!(a.value.flags.invisible);
         assert!(a.value.lock_position);

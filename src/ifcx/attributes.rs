@@ -77,7 +77,8 @@ fn outer_text(a: &AttributeEntity) -> Text {
         horizontal_alignment: h_out(a.horizontal_alignment),
         vertical_alignment: v_out(a.vertical_alignment),
         normal: a.normal,
-        thickness: a.thickness,
+        // The drawing model keeps no thickness on attributes.
+        thickness: 0.0,
         generation_flags: a.text_generation_flags,
     }
 }
@@ -225,7 +226,12 @@ fn value_in(v: &IfccadAttributeValue, n: &Names, l: &mut Losses) -> Option<Attri
     a.insertion_point = t.insertion_point;
     a.alignment_point = t.alignment_point.unwrap_or(t.insertion_point);
     a.height = t.height;
-    a.thickness = t.thickness;
+    if t.thickness != 0.0 {
+        l.note(format!(
+            "attribute {} thickness has no place in the drawing model; dropped",
+            v.tag
+        ));
+    }
     a.rotation = t.rotation;
     a.width_factor = t.width_factor;
     a.oblique_angle = t.oblique_angle;
@@ -277,7 +283,6 @@ pub(super) fn definition_in(
     d.insertion_point = a.insertion_point;
     d.alignment_point = a.alignment_point;
     d.height = a.height;
-    d.thickness = a.thickness;
     d.rotation = a.rotation;
     d.width_factor = a.width_factor;
     d.oblique_angle = a.oblique_angle;

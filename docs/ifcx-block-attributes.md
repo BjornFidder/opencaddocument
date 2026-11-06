@@ -1,10 +1,7 @@
 # IFCX block attributes
 
 This development mapping targets IFCCAD profile 0.6.0 / CBOR mapping 6.
-Cargo.toml pins matching, reachable native-model and codec development revisions,
-including signed ATTDEF/ATTRIB thickness. Cargo.lock records the portable graph;
-no local path overrides are needed. These development revisions are explicit
-dependencies, not a native release or a deployed CAD-host version.
+Cargo.toml pins the matching native-model development revision.
 
 ## Stored content
 
@@ -14,8 +11,9 @@ duplicate or renamed tags do not invent a definition association. A reliable
 in-memory ATTDEF handle becomes an optional explicit definition reference.
 
 Definitions and values retain flags, prompts/defaults where applicable,
-position locks, advisory field length, text styles, placement and signed
-thickness. The outer Text and active embedded MText are separate records with
+position locks, advisory field length, text styles and placement. The drawing
+model keeps no attribute thickness: a non-zero thickness read from IFCX is
+reported as a loss. The outer Text and active embedded MText are separate records with
 independent content and presentation. Empty active MText stays empty even when
 the outer fallback contains older text.
 
