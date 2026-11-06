@@ -15,7 +15,7 @@ ifcx = ["dep:ifccad", "dep:web-time"]
 acadrust = { git = "https://github.com/hakanaktt/acadrust.git", rev = "185e8cbe" }
 serde = { version = "1", features = ["derive"], optional = true }
 # ifccad only reads and writes IFCX; the mapping to `Document` lives here.
-ifccad = { git = "https://github.com/OpenAEC-Foundation/ifccad.git", rev = "0e8f5e6175c236f0bbef6466da7dd1aff5834045", optional = true }
+ifccad = { git = "https://github.com/OpenAEC-Foundation/ifccad.git", rev = "21660ce10453bf8a32afd22281e085d16980f70a", optional = true }
 web-time = { version = "1", optional = true }
 
 [dev-dependencies]
@@ -29,4 +29,12 @@ required-features = ["ifcx"]
 
 [[example]]
 name = "font_symbol_review"
+required-features = ["ifcx"]
+
+[[example]]
+name = "attribute_review"
+required-features = ["ifcx"]
+
+[[example]]
+name = "block_attributes_gallery"
 required-features = ["ifcx"]
