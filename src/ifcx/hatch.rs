@@ -109,7 +109,7 @@ pub(super) fn hatch_out(hatch: &Hatch, losses: &mut Losses) -> Option<IfccadEnti
     valid.then_some(IfccadEntityKind::Hatch(converted))
 }
 
-pub(super) fn hatch_in(hatch: &IfccadHatch) -> EntityType {
+pub(super) fn hatch_in(hatch: &IfccadHatch) -> Result<EntityType, Error> {
     let (origin, normal, rotation) = placement_in(&hatch.placement);
     let frame = Frame2 {
         origin: [origin.x, origin.y],
@@ -125,7 +125,7 @@ pub(super) fn hatch_in(hatch: &IfccadHatch) -> EntityType {
         HatchAreaRule::Ignore => HatchStyleType::Ignore,
     };
     for hatch_loop in &hatch.loops {
-        let mut path = boundary_in(&hatch_loop.boundary, &frame);
+        let mut path = boundary_in(&hatch_loop.boundary, &frame)?;
         let mut bits = path.flags.bits() & BoundaryPathFlags::POLYLINE.bits();
         if let Some(p) = &hatch_loop.provenance {
             bits |= u32::from(p.from_source_objects)
@@ -210,7 +210,7 @@ pub(super) fn hatch_in(hatch: &IfccadHatch) -> EntityType {
                 .collect(),
         };
     }
-    EntityType::Hatch(Box::new(converted))
+    Ok(EntityType::Hatch(Box::new(converted)))
 }
 
 /// A frame turned in the hatch plane, for IFCX hatches whose placement is
@@ -294,15 +294,24 @@ pub(super) fn boundary_out(path: &BoundaryPath) -> Option<HatchBoundary2> {
                     sweep_parameter: sweep(arc.start_angle, arc.end_angle, arc.counter_clockwise),
                 }
             }
-            // Spline boundaries have no IFCX form; nor does a polyline among
-            // other edges.
-            BoundaryEdge::Spline(_) | BoundaryEdge::Polyline(_) => return None,
+            BoundaryEdge::Spline(spline) => {
+                let (control, fit) = super::spline::edge_out(spline)?;
+                HatchEdge2::Spline {
+                    control,
+                    fit,
+                    periodic: spline.periodic,
+                }
+            }
+            BoundaryEdge::Polyline(_) => return None,
         });
     }
     Some(HatchBoundary2::Edges(edges))
 }
 
-pub(super) fn boundary_in(boundary: &HatchBoundary2, frame: &Frame2) -> BoundaryPath {
+pub(super) fn boundary_in(
+    boundary: &HatchBoundary2,
+    frame: &Frame2,
+) -> Result<BoundaryPath, Error> {
     let mut path = BoundaryPath::new();
     match boundary {
         HatchBoundary2::Polyline { vertices, bulges } => {
@@ -346,6 +355,16 @@ pub(super) fn boundary_in(boundary: &HatchBoundary2, frame: &Frame2) -> Boundary
         HatchBoundary2::Edges(edges) => {
             for edge in edges {
                 path.edges.push(match edge {
+                    HatchEdge2::Spline {
+                        control,
+                        fit,
+                        periodic,
+                    } => BoundaryEdge::Spline(super::spline::edge_in(
+                        control,
+                        fit.as_ref(),
+                        *periodic,
+                        frame,
+                    )?),
                     HatchEdge2::Line { start, end } => BoundaryEdge::Line(LineEdge {
                         start: frame.point(*start),
                         end: frame.point(*end),
@@ -386,7 +405,7 @@ pub(super) fn boundary_in(boundary: &HatchBoundary2, frame: &Frame2) -> Boundary
             }
         }
     }
-    path
+    Ok(path)
 }
 
 fn elliptic_in(

@@ -50,6 +50,8 @@ mod layout;
 mod leader;
 mod leader_graphics;
 mod multi_leader;
+mod spline;
+pub use spline::SplineExchangeTarget;
 mod tables;
 mod text;
 
@@ -69,7 +71,7 @@ const TEMPLATE: &str = r#"{
     "author": "OpenCAD",
     "timestamp": "1970-01-01T00:00:00Z"
   },
-  "imports": [{ "uri": "urn:example:ifccad:0.7.0" }],
+  "imports": [{ "uri": "urn:example:ifccad:0.8.0" }],
   "schemas": {},
   "data": [
     {
@@ -88,7 +90,7 @@ const TEMPLATE: &str = r#"{
           "nextLayoutId": 2,
           "nextLinePatternId": 1,
           "nextSymbolSourceId": 1,
-          "profileVersion": "0.7.0",
+          "profileVersion": "0.8.0",
           "nextUcsId": 1,
           "nextModelWindowId": 1
         }
@@ -566,6 +568,8 @@ fn add_in(
         }
         IfccadEntityKind::Leader(source) => Some(leader::leader_in(source, document, names)?),
         IfccadEntityKind::Tolerance(source) => Some(leader::tolerance_in(source, document, names)?),
+        IfccadEntityKind::Spline(source) => Some(EntityType::Spline(spline::to_cad(source)?)),
+        IfccadEntityKind::Hatch(source) => Some(hatch::hatch_in(source)?),
         IfccadEntityKind::MultiLeader(source) => {
             Some(multi_leader::import(source, names, document, losses)?)
         }
@@ -1052,6 +1056,7 @@ impl Writer<'_> {
             EntityType::Leader(value) => return leader::leader_out(self, value).map(Some),
             EntityType::MultiLeader(value) => return multi_leader::export(self, value).map(Some),
             EntityType::Tolerance(value) => return leader::tolerance_out(self, value).map(Some),
+            EntityType::Spline(value) => IfccadEntityKind::Spline(Box::new(spline::out(value)?)),
             EntityType::MText(mtext) => return Ok(text::mtext_out(self, mtext)),
             EntityType::Hatch(hatch) => return Ok(hatch::hatch_out(hatch, &mut self.losses)),
             EntityType::Viewport(viewport) => return Ok(layout::viewport_out(self, viewport)),
@@ -1368,7 +1373,7 @@ fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Opt
             EntityType::Text(converted)
         }
         IfccadEntityKind::MText(mtext) => return text::mtext_in(mtext, names, losses),
-        IfccadEntityKind::Hatch(hatch) => hatch::hatch_in(hatch),
+        IfccadEntityKind::Hatch(hatch) => hatch::hatch_in(hatch).ok()?,
         IfccadEntityKind::Viewport(viewport) => {
             if layout::has_property_overrides(viewport) {
                 losses.note("viewport layer property overrides");

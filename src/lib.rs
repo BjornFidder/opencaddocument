@@ -21,7 +21,7 @@ pub use format::{snap, Dwg, Dxf, Error, Format, Loss};
 /// The IFCCAD model and IO library used by [`Ifcx`].
 pub use ifccad;
 #[cfg(feature = "ifcx")]
-pub use ifcx::{IfccadExportOutcome, IfccadImportOutcome, Ifcx};
+pub use ifcx::{IfccadExportOutcome, IfccadImportOutcome, Ifcx, SplineExchangeTarget};
 pub use placement::Placement;
 pub use read::{DwgReader, DxfReader};
 

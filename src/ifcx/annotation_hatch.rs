@@ -109,7 +109,7 @@ fn presentation_in(
                     classification,
                     boundary,
                 } => {
-                    let mut path = hatch::boundary_in(&boundary.geometry, &frame);
+                    let mut path = hatch::boundary_in(&boundary.geometry, &frame)?;
                     path.boundary_handles = boundary
                         .source_entity_ids
                         .iter()
