@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use opencaddocument::entities::{Line, Spline};
+use opencaddocument::entities::{Line, Ray};
 use opencaddocument::ifccad::{self, IfccadEntity};
 use opencaddocument::objects::ObjectType;
 use opencaddocument::types::{Handle, Vector3};
@@ -187,12 +187,12 @@ fn maps_identify_converted_entities_in_model_paper_and_blocks() {
 #[test]
 fn export_map_omits_unsupported_entities_and_reports_the_loss() {
     let (mut document, line) = line_document();
-    let spline = document
-        .add_entity(EntityType::Spline(Spline::new()))
+    let ray = document
+        .add_entity(EntityType::Ray(Ray::new(Vector3::ZERO, Vector3::UNIT_X)))
         .unwrap();
     let typed = Ifcx.export_ifccad(&document).unwrap();
     assert!(typed.entity_ids.contains_key(&line));
-    assert!(!typed.entity_ids.contains_key(&spline));
+    assert!(!typed.entity_ids.contains_key(&ray));
     assert!(!typed.losses.is_empty());
     let entity = typed.drawing.model.entities.first().unwrap();
     assert_eq!(typed.entity_ids[&line], entity.id());
