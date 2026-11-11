@@ -39,6 +39,10 @@ With the `ifcx` feature, the `Ifcx` format reads and writes IFCX through
 - The block-attribute mapping covers ATTDEF and ordered INSERT-owned
   ATTRIB, including active MText, selected fields and annotation contexts; see
   [block-attribute coverage](docs/ifcx-block-attributes.md).
+- The development Leader slice covers classic Leader, MultiLeader owned parts,
+  styles, labels, scale presentations, saved graphics and supporting Tolerance.
+  Physical owned tolerance payloads remain explicitly unqualified; see
+  [Leader coverage and boundaries](docs/ifcx-leaders.md).
 - An IFCX file's identity (header id, drawing id) rides on custom document
   properties, so a drawing read from IFCX is written back as the same drawing.
 

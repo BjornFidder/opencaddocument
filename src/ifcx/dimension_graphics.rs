@@ -281,6 +281,7 @@ fn resources(d: &IfccadDocument) -> IfccadDocument {
         attribute_visibility: Default::default(),
         annotation_settings: None,
         dimension_styles: d.dimension_styles.clone(),
+        multi_leader_styles: d.multi_leader_styles.clone(),
         symbol_sources: d.symbol_sources.clone(),
         point_display: d.point_display,
         text_styles: d.text_styles.clone(),
@@ -315,6 +316,7 @@ fn resources(d: &IfccadDocument) -> IfccadDocument {
 fn context<'a>(document: &'a Document, drawing: &IfccadDocument) -> Writer<'a> {
     Writer {
         annotation_scales: HashMap::new(),
+        multi_leader_styles: HashMap::new(),
         annotation_views: HashMap::new(),
         model_window_handles: HashMap::new(),
         document,

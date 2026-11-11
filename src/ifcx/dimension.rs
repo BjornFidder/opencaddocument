@@ -103,56 +103,66 @@ variables! {
     347 handle dimltex2_handle, 371 int dimlwd, 372 int dimlwe,
 }
 
-/// `style` with a dimension's own overrides applied.
-fn with_overrides(style: &DimStyle, common: &EntityCommon) -> DimStyle {
-    let mut style = style.clone();
-    let values = common
-        .extended_data
-        .get_record("ACAD")
-        .and_then(|record| match record.values.first() {
-            Some(XDataValue::String(name)) if name == "DSTYLE" => Some(&record.values[1..]),
-            _ => None,
-        })
-        .unwrap_or(&[]);
-    let mut values = values.iter();
+/// DSTYLE variable pairs, shared by evaluation, presence and diagnostics.
+fn override_values(common: &EntityCommon) -> Vec<(i16, &XDataValue)> {
+    let Some(record) = common.extended_data.get_record("ACAD") else {
+        return vec![];
+    };
+    if !matches!(record.values.first(), Some(XDataValue::String(name)) if name == "DSTYLE") {
+        return vec![];
+    }
+    let mut result = vec![];
+    let mut values = record.values[1..].iter();
     while let Some(value) = values.next() {
         if let (XDataValue::Integer16(code), Some(value)) = (value, values.clone().next()) {
-            set_variable(&mut style, *code, value);
+            result.push((*code, value));
             values.next();
         }
     }
+    result
+}
+/// `style` with an entity's own overrides applied.
+pub(super) fn with_overrides(style: &DimStyle, common: &EntityCommon) -> DimStyle {
+    let mut style = style.clone();
+    for (code, value) in override_values(common) {
+        set_variable(&mut style, code, value);
+    }
     style
 }
-
+pub(super) fn override_codes(common: &EntityCommon) -> std::collections::BTreeSet<i16> {
+    override_values(common)
+        .into_iter()
+        .map(|(code, _)| code)
+        .collect()
+}
 fn has_normalized_override_presence(
     style: &DimStyle,
     effective: &DimStyle,
     common: &EntityCommon,
 ) -> bool {
-    let Some(record) = common.extended_data.get_record("ACAD") else {
-        return false;
-    };
-    if !matches!(record.values.first(),Some(XDataValue::String(name)) if name=="DSTYLE") {
-        return false;
-    }
-    let mut values = record.values[1..].iter();
-    while let Some(value) = values.next() {
-        if let (XDataValue::Integer16(code), Some(_)) = (value, values.clone().next()) {
-            if !CODES.contains(code) || variable(style, *code) == variable(effective, *code) {
-                return true;
-            }
-            values.next();
-        }
-    }
-    false
+    override_values(common).into_iter().any(|(code, _)| {
+        !CODES.contains(&code) || variable(style, code) == variable(effective, code)
+    })
 }
 
 /// The overrides that turn `base` into `effective`, as a `DSTYLE` record.
-fn overrides_record(base: &DimStyle, effective: &DimStyle) -> Option<ExtendedDataRecord> {
+pub(super) fn overrides_record(
+    base: &DimStyle,
+    effective: &DimStyle,
+) -> Option<ExtendedDataRecord> {
+    overrides_record_selected(base, effective, &Default::default())
+}
+pub(super) fn overrides_record_selected(
+    base: &DimStyle,
+    effective: &DimStyle,
+    present: &std::collections::BTreeSet<i16>,
+) -> Option<ExtendedDataRecord> {
     let changed: Vec<i16> = CODES
         .iter()
         .copied()
-        .filter(|code| variable(base, *code) != variable(effective, *code))
+        .filter(|code| {
+            present.contains(code) || variable(base, *code) != variable(effective, *code)
+        })
         .collect();
     if changed.is_empty() {
         return None;
@@ -181,7 +191,10 @@ const MARKERS: [(&str, DimensionMarker<u64>); 5] = [
 
 /// A dimension style as IFCX settings; what IFCX cannot hold falls back to
 /// its default and is reported.
-fn settings_out(style: &DimStyle, writer: &mut Writer) -> Option<IfccadDimensionSettings> {
+pub(super) fn settings_out(
+    style: &DimStyle,
+    writer: &mut Writer,
+) -> Option<IfccadDimensionSettings> {
     let document = writer.document;
     let text_style = document
         .text_styles
@@ -411,7 +424,7 @@ fn settings_out(style: &DimStyle, writer: &mut Writer) -> Option<IfccadDimension
 }
 
 /// IFCX settings as a dimension style named `name`.
-fn style_in(
+pub(super) fn style_in(
     name: &str,
     v: &IfccadDimensionSettings,
     names: &Names,
@@ -786,8 +799,10 @@ pub(super) fn write_styles(writer: &mut Writer) -> Result<(), Error> {
         writer
             .dim_styles
             .insert(key.clone(), (id, settings.clone()));
+        let leader_arrow = leader::arrow_out(style.dimldrblk, writer)?;
         writer.drawing.dimension_styles.push(IfccadDimensionStyle {
             annotative: style.annotative,
+            leader_arrow,
             id,
             name: style.name.clone(),
             settings,
@@ -823,6 +838,7 @@ pub(super) fn read_styles(
             ));
         }
         converted.annotative = style.annotative;
+        converted.dimldrblk = leader::arrow_in(style.leader_arrow, names, document)?;
         match document.dim_styles.get_mut(&style.name) {
             Some(existing) => {
                 converted.handle = existing.handle;
@@ -1124,7 +1140,7 @@ pub(super) fn dimension_in(
 }
 
 /// The settings that differ between `base` and `effective`, as overrides.
-fn overrides_between(
+pub(super) fn overrides_between(
     base: &IfccadDimensionSettings,
     effective: &IfccadDimensionSettings,
 ) -> IfccadDimensionOverrides {

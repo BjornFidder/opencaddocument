@@ -36,6 +36,7 @@ mod annotation;
 mod annotation_attributes;
 mod annotation_dimension;
 mod annotation_hatch;
+mod annotation_leader;
 mod annotation_policy;
 mod annotation_views;
 mod attribute_fields;
@@ -46,6 +47,9 @@ mod dimension_kinds;
 mod font;
 mod hatch;
 mod layout;
+mod leader;
+mod leader_graphics;
+mod multi_leader;
 mod tables;
 mod text;
 
@@ -65,7 +69,7 @@ const TEMPLATE: &str = r#"{
     "author": "OpenCAD",
     "timestamp": "1970-01-01T00:00:00Z"
   },
-  "imports": [{ "uri": "urn:example:ifccad:0.6.0" }],
+  "imports": [{ "uri": "urn:example:ifccad:0.7.0" }],
   "schemas": {},
   "data": [
     {
@@ -84,7 +88,7 @@ const TEMPLATE: &str = r#"{
           "nextLayoutId": 2,
           "nextLinePatternId": 1,
           "nextSymbolSourceId": 1,
-          "profileVersion": "0.6.0",
+          "profileVersion": "0.7.0",
           "nextUcsId": 1,
           "nextModelWindowId": 1
         }
@@ -273,7 +277,9 @@ impl Ifcx {
             document.add_entity(EntityType::Block(start))?;
             document.add_entity(EntityType::BlockEnd(end))?;
         }
+        leader::prepare_none_arrow(drawing, &mut document)?;
         dimension::read_styles(drawing, &mut document, &mut names, &mut losses)?;
+        multi_leader::import_styles(drawing, &mut document, &mut names)?;
         let papers = layout::read(drawing, &mut document, &mut losses)?;
         let mut sheets: Vec<&IfccadPaperLayout> = drawing.paper_layouts.iter().collect();
         sheets.sort_by_key(|paper| paper.tab_index);
@@ -349,6 +355,8 @@ impl Ifcx {
         annotation_hatch::import_all(drawing, &mut document, &names, &handles, &mut losses)?;
         annotation_dimension::import_all(drawing, &mut document, &names, &handles, &mut losses)?;
         dimension::associations_in(drawing, &mut document, &handles, &mut losses);
+        leader::link_import(drawing, &mut document, &handles)?;
+        annotation_leader::import(drawing, &mut document, &names, &handles, &mut losses)?;
         Ok(IfccadImportOutcome {
             document,
             losses: losses.into_vec(),
@@ -408,6 +416,7 @@ impl Ifcx {
         };
         let mut writer = Writer {
             annotation_scales: HashMap::new(),
+            multi_leader_styles: HashMap::new(),
             annotation_views: HashMap::new(),
             model_window_handles: HashMap::new(),
             document,
@@ -432,6 +441,7 @@ impl Ifcx {
         annotation_views::export(&mut writer)?;
         tables::write(&mut writer)?;
         dimension::write_styles(&mut writer)?;
+        multi_leader::export_styles(&mut writer)?;
 
         for entity in document.model_space_entities() {
             if let Some(entity) = writer.entity(entity)? {
@@ -465,6 +475,7 @@ impl Ifcx {
             );
         }
 
+        leader::link_export(&mut writer)?;
         annotation_hatch::export_all(&mut writer)?;
         annotation_policy::export(&mut writer)?;
         attributes::finish_export(&mut writer)?;
@@ -515,6 +526,7 @@ fn link_hatches(
 /// Names of what IFCX refers to by id.
 #[derive(Default)]
 struct Names {
+    multi_leader_styles: HashMap<ifccad::IfccadMultiLeaderStyleId, Handle>,
     annotation_views: HashMap<ifccad::IfccadAnnotationViewId, Handle>,
     model_window_handles: HashMap<ifccad::IfccadModelWindowId, Handle>,
     annotation_scales: HashMap<ifccad::IfccadAnnotationScaleId, Handle>,
@@ -552,6 +564,11 @@ fn add_in(
         IfccadEntityKind::Dimension(source) => {
             dimension::dimension_in(source, document, names, losses)
         }
+        IfccadEntityKind::Leader(source) => Some(leader::leader_in(source, document, names)?),
+        IfccadEntityKind::Tolerance(source) => Some(leader::tolerance_in(source, document, names)?),
+        IfccadEntityKind::MultiLeader(source) => {
+            Some(multi_leader::import(source, names, document, losses)?)
+        }
         kind => entity_in(kind, names, losses),
     };
     let Some(mut converted) = converted else {
@@ -584,12 +601,24 @@ fn add_in(
             target.base_mut().block_name = name;
         }
     }
+    let picture = match &entity.kind {
+        IfccadEntityKind::Leader(value) => value.graphics.as_ref(),
+        IfccadEntityKind::MultiLeader(value) => value.graphics.as_ref(),
+        IfccadEntityKind::Tolerance(value) => value.graphics.as_ref(),
+        _ => None,
+    };
+    if let Some(picture) = picture {
+        converted.common_mut().graphic_data = Some(leader_graphics::restore(
+            drawing, document, names, picture, losses,
+        )?);
+    }
     let handle = document.add_entity(converted)?;
     annotation::import_entity(&entity.kind, handle, document, names, losses)?;
     Ok(Some(handle))
 }
 
 struct Writer<'a> {
+    multi_leader_styles: HashMap<Handle, ifccad::IfccadMultiLeaderStyleId>,
     annotation_views: HashMap<Handle, ifccad::IfccadAnnotationViewId>,
     model_window_handles: HashMap<Handle, ifccad::IfccadModelWindowId>,
     annotation_scales: HashMap<Handle, ifccad::IfccadAnnotationScaleId>,
@@ -634,6 +663,25 @@ struct Writer<'a> {
 
 impl Writer<'_> {
     fn entity(&mut self, entity: &EntityType) -> Result<Option<IfccadEntity>, Error> {
+        if !matches!(
+            entity,
+            EntityType::Leader(_) | EntityType::MultiLeader(_) | EntityType::Tolerance(_)
+        ) {
+            return self.entity_value(entity);
+        }
+        let owner = format!(
+            "{} {}",
+            entity.as_entity().entity_type(),
+            entity.common().handle
+        );
+        let before = self.losses.content_snapshot();
+        let value = self
+            .entity_value(entity)
+            .map_err(|error| annotation::invalid(&format!("{owner}: {error}")));
+        self.losses.locate_new_content(&before, &owner);
+        value
+    }
+    fn entity_value(&mut self, entity: &EntityType) -> Result<Option<IfccadEntity>, Error> {
         let Some(mut kind) = self.kind(entity)? else {
             self.losses.note(entity.as_entity().entity_type());
             return Ok(None);
@@ -644,6 +692,16 @@ impl Writer<'_> {
             target.graphics = dimension_graphics::capture(self, source, &target.placement)?;
         }
         annotation::export_entity(self, entity, &mut kind)?;
+        annotation_leader::export(self, entity, &mut kind)?;
+        let picture = match &mut kind {
+            IfccadEntityKind::Leader(value) => Some(&mut value.graphics),
+            IfccadEntityKind::MultiLeader(value) => Some(&mut value.graphics),
+            IfccadEntityKind::Tolerance(value) => Some(&mut value.graphics),
+            _ => None,
+        };
+        if let Some(picture) = picture {
+            *picture = leader_graphics::capture(self, entity.common().graphic_data.as_deref())?;
+        }
         annotation_dimension::export_entity(self, entity, &mut kind)?;
         let common = entity.common();
         let layer_id = match self.layers.get(&common.layer.to_ascii_lowercase()) {
@@ -991,6 +1049,9 @@ impl Writer<'_> {
                     content,
                 })
             }
+            EntityType::Leader(value) => return leader::leader_out(self, value).map(Some),
+            EntityType::MultiLeader(value) => return multi_leader::export(self, value).map(Some),
+            EntityType::Tolerance(value) => return leader::tolerance_out(self, value).map(Some),
             EntityType::MText(mtext) => return Ok(text::mtext_out(self, mtext)),
             EntityType::Hatch(hatch) => return Ok(hatch::hatch_out(hatch, &mut self.losses)),
             EntityType::Viewport(viewport) => return Ok(layout::viewport_out(self, viewport)),
