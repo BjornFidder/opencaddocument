@@ -127,6 +127,9 @@ impl NameInventory {
                     | EntityType::MLine(_)
                     | EntityType::Block(_)
                     | EntityType::BlockEnd(_)
+                    // Viewport resource links outside the common fields are
+                    // handles or belong to the separate plot-style domain.
+                    | EntityType::Viewport(_)
             ) && common.raw_record.is_none()
                 && common.extended_data.records().is_empty()
                 && common.extended_data.raw_dwg_eed.is_empty();
@@ -141,6 +144,12 @@ impl NameInventory {
             complete &= simple_pattern(pattern);
         }
         let style_dict = doc.header.acad_mlinestyle_dict_handle;
+        let annotation_variables =
+            doc.get_subdictionary("AcDbVariableDictionary")
+                .and_then(|handle| match doc.objects.get(&handle) {
+                    Some(ObjectType::Dictionary(dictionary)) => Some(dictionary),
+                    _ => None,
+                });
         for (&key, object) in &doc.objects {
             match object {
                 ObjectType::MLineStyle(style) => {
@@ -160,8 +169,22 @@ impl NameInventory {
                 | ObjectType::TableStyle(_)
                 | ObjectType::Layout(_)
                 | ObjectType::PlaceHolder(_)
+                | ObjectType::Scale(_)
                 | ObjectType::DictionaryWithDefault(_)
                 | ObjectType::SortEntitiesTable(_) => {}
+                // These drawing variables name an annotation scale or store
+                // flags. Other dictionary variables can carry unknown names.
+                ObjectType::DictionaryVariable(variable)
+                    if variable.schema_number == 0
+                        && matches!(
+                            variable.name.as_str(),
+                            "CANNOSCALE" | "ANNOTATIVEDWG" | "MSLTSCALE" | "ANNOALLVISIBLE"
+                        )
+                        && annotation_variables.is_some_and(|dictionary| {
+                            dictionary.handle == variable.owner_handle
+                                && exact_entry(dictionary, &variable.name, key)
+                                && dictionary.entries.iter().filter(|(_, h)| *h == key).count() == 1
+                        }) => {}
                 _ => complete = false,
             }
         }

@@ -33,7 +33,7 @@ jobs:
       - run: cargo test --locked --features serde,ifcx
       - run: cargo test --locked --features selection
       - run: cargo test --locked --features selection-storage
-      - run: cargo test --locked --features serde,ifcx,selection-storage
+      - run: cargo test --locked --features serde,mline-pilot
 
   selection-storage-wasm:
     name: Selection storage (WASM)
@@ -45,3 +45,6 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --locked --lib --no-default-features --target wasm32-unknown-unknown --features selection-storage
+      - run: cargo check --locked --lib --target wasm32-unknown-unknown --features serde,mline-pilot
+        env:
+          RUSTFLAGS: '--cfg getrandom_backend="wasm_js"'
