@@ -49,6 +49,16 @@ With the `ifcx` feature, the `Ifcx` format reads and writes IFCX through
 DWG and DXF reading and writing come from
 [acadrust](https://github.com/hakanaktt/acadrust).
 
+Enable the `selection` Cargo feature to use `selection::DocumentSelection` for
+owned capture and inspection of explicit ModelSpace Line/MLINE selections,
+their layers, simple linetypes and MLINESTYLE
+dependencies. It keeps separate included, external, missing and contextual
+requirements. See [owned selections](docs/selection.md) and the
+[field audit](docs/selection-fields.md). The optional `selection-storage` feature
+also enables `selection` and provides [versioned storage](docs/selection-storage.md).
+The [reconstruction API](docs/selection-reconstruction.md) builds an independent
+candidate from an explicit subset and reports the result for each requested root.
+
 ## Logical IFCCAD conversion
 
 With `ifcx` enabled, `Ifcx::import_ifccad` and `Ifcx::export_ifccad` convert

@@ -31,3 +31,17 @@ jobs:
       - run: cargo test --locked
       - run: cargo test --locked --features serde
       - run: cargo test --locked --features serde,ifcx
+      - run: cargo test --locked --features selection
+      - run: cargo test --locked --features selection-storage
+      - run: cargo test --locked --features serde,ifcx,selection-storage
+
+  selection-storage-wasm:
+    name: Selection storage (WASM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --lib --no-default-features --target wasm32-unknown-unknown --features selection-storage
