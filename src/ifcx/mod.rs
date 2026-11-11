@@ -569,7 +569,8 @@ fn add_in(
         IfccadEntityKind::Leader(source) => Some(leader::leader_in(source, document, names)?),
         IfccadEntityKind::Tolerance(source) => Some(leader::tolerance_in(source, document, names)?),
         IfccadEntityKind::Spline(source) => Some(EntityType::Spline(spline::to_cad(source)?)),
-        IfccadEntityKind::Hatch(source) => Some(hatch::hatch_in(source)?),
+        // A hatch whose boundary cannot be rebuilt is a loss, not a failed import.
+        IfccadEntityKind::Hatch(source) => hatch::hatch_in(source).ok(),
         IfccadEntityKind::MultiLeader(source) => {
             Some(multi_leader::import(source, names, document, losses)?)
         }
@@ -612,9 +613,15 @@ fn add_in(
         _ => None,
     };
     if let Some(picture) = picture {
-        converted.common_mut().graphic_data = Some(leader_graphics::restore(
-            drawing, document, names, picture, losses,
-        )?);
+        // A saved picture that cannot be restored is dropped; the entity
+        // is drawn from its own data.
+        match leader_graphics::restore(drawing, document, names, picture, losses) {
+            Ok(data) => converted.common_mut().graphic_data = Some(data),
+            Err(error) => losses.note(format!(
+                "{} saved picture dropped: {error}",
+                kind_name(&entity.kind)
+            )),
+        }
     }
     let handle = document.add_entity(converted)?;
     annotation::import_entity(&entity.kind, handle, document, names, losses)?;
@@ -704,7 +711,18 @@ impl Writer<'_> {
             _ => None,
         };
         if let Some(picture) = picture {
-            *picture = leader_graphics::capture(self, entity.common().graphic_data.as_deref())?;
+            // An unreadable saved picture is dropped, as for dimensions; the
+            // entity is still written.
+            *picture = match leader_graphics::capture(self, entity.common().graphic_data.as_deref()) {
+                Ok(captured) => captured,
+                Err(error) => {
+                    self.losses.note(format!(
+                        "{} saved picture dropped: {error}",
+                        entity.as_entity().entity_type()
+                    ));
+                    None
+                }
+            };
         }
         annotation_dimension::export_entity(self, entity, &mut kind)?;
         let common = entity.common();
@@ -1056,7 +1074,11 @@ impl Writer<'_> {
             EntityType::Leader(value) => return leader::leader_out(self, value).map(Some),
             EntityType::MultiLeader(value) => return multi_leader::export(self, value).map(Some),
             EntityType::Tolerance(value) => return leader::tolerance_out(self, value).map(Some),
-            EntityType::Spline(value) => IfccadEntityKind::Spline(Box::new(spline::out(value)?)),
+            // A spline IFCX cannot hold is reported as a loss by the caller.
+            EntityType::Spline(value) => match spline::out(value) {
+                Ok(spline) => IfccadEntityKind::Spline(Box::new(spline)),
+                Err(_) => return Ok(None),
+            },
             EntityType::MText(mtext) => return Ok(text::mtext_out(self, mtext)),
             EntityType::Hatch(hatch) => return Ok(hatch::hatch_out(hatch, &mut self.losses)),
             EntityType::Viewport(viewport) => return Ok(layout::viewport_out(self, viewport)),
@@ -1373,7 +1395,6 @@ fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Opt
             EntityType::Text(converted)
         }
         IfccadEntityKind::MText(mtext) => return text::mtext_in(mtext, names, losses),
-        IfccadEntityKind::Hatch(hatch) => hatch::hatch_in(hatch).ok()?,
         IfccadEntityKind::Viewport(viewport) => {
             if layout::has_property_overrides(viewport) {
                 losses.note("viewport layer property overrides");

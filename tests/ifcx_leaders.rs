@@ -459,7 +459,7 @@ fn independent_mleader_scale_presentation_and_oblique_content() {
 }
 
 #[test]
-fn unsupported_snapshot_is_an_atomic_failure() {
+fn unsupported_snapshot_is_dropped_as_a_loss() {
     let mut document = Document::new();
     let mut value = opencaddocument::entities::MultiLeader::with_text(
         "saved",
@@ -487,8 +487,17 @@ fn unsupported_snapshot_is_an_atomic_failure() {
     document
         .add_entity(EntityType::MultiLeader(Box::new(value)))
         .unwrap();
-    let error = Ifcx.export_ifccad(&document).unwrap_err().to_string();
-    assert!(error.contains("unsupported proxy record 999"), "{error}");
+    // The leader is still written; only its saved picture is dropped,
+    // as for a dimension's.
+    let outcome = Ifcx.export_ifccad(&document).unwrap();
+    assert!(
+        outcome
+            .losses
+            .iter()
+            .any(|loss| loss.message.contains("unsupported proxy record 999")),
+        "{:?}",
+        outcome.losses
+    );
 }
 
 #[test]
