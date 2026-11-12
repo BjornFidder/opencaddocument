@@ -278,6 +278,9 @@ fn canonical(
 /// Resource-only conversion context: never clone the drawing's entity graph.
 fn resources(d: &IfccadDocument) -> IfccadDocument {
     IfccadDocument {
+        table_styles: Vec::new(),
+        table_data_links: Vec::new(),
+        data_tables: Vec::new(),
         attribute_visibility: Default::default(),
         annotation_settings: None,
         dimension_styles: d.dimension_styles.clone(),
@@ -315,6 +318,9 @@ fn resources(d: &IfccadDocument) -> IfccadDocument {
 }
 fn context<'a>(document: &'a Document, drawing: &IfccadDocument) -> Writer<'a> {
     Writer {
+        table_data_links: HashMap::new(),
+        table_styles: HashMap::new(),
+        table_picture: false,
         annotation_scales: HashMap::new(),
         multi_leader_styles: HashMap::new(),
         annotation_views: HashMap::new(),
@@ -631,32 +637,7 @@ pub(super) fn import(
             return Ok(None);
         }
     };
-    let mut number = 1;
-    let name = loop {
-        let name = format!("*D{number}");
-        if document.block_records.get(&name).is_none() {
-            break name;
-        }
-        number += 1;
-    };
-    let mut record = BlockRecord::new(name.clone());
-    record.flags.anonymous = true;
-    record.handle = document.allocate_handle();
-    record.block_entity_handle = document.allocate_handle();
-    record.block_end_handle = document.allocate_handle();
-    let mut start = Block::new(name.clone(), Vector3::new(0., 0., 0.));
-    start.common.handle = record.block_entity_handle;
-    start.common.owner_handle = record.handle;
-    let mut end = BlockEnd::new();
-    end.common.handle = record.block_end_handle;
-    end.common.owner_handle = record.handle;
-    document.block_records.add(record.clone())?;
-    document.add_entity(EntityType::Block(start))?;
-    document.add_entity(EntityType::BlockEnd(end))?;
-    for mut part in parts {
-        part.common_mut().owner_handle = record.handle;
-        document.add_entity(part)?;
-    }
+    let (name, _) = install_picture(document, "*D", parts)?;
     for message in metadata {
         losses.note(message);
     }
@@ -667,6 +648,207 @@ pub(super) fn import(
         losses.retained_note(note);
     }
     Ok(Some(name))
+}
+
+fn install_picture(
+    document: &mut Document,
+    prefix: &str,
+    parts: Vec<EntityType>,
+) -> Result<(String, Handle), Error> {
+    let name = (1..)
+        .map(|number| format!("{prefix}{number}"))
+        .find(|name| document.block_records.get(name).is_none())
+        .expect("available picture block name");
+    let mut record = BlockRecord::new(name.clone());
+    record.flags.anonymous = true;
+    record.handle = document.allocate_handle();
+    record.block_entity_handle = document.allocate_handle();
+    record.block_end_handle = document.allocate_handle();
+    let handle = record.handle;
+    let mut start = Block::new(name.clone(), Vector3::ZERO);
+    start.common.handle = record.block_entity_handle;
+    start.common.owner_handle = handle;
+    let mut end = BlockEnd::new();
+    end.common.handle = record.block_end_handle;
+    end.common.owner_handle = handle;
+    document.block_records.add(record)?;
+    document.add_entity(EntityType::Block(start))?;
+    document.add_entity(EntityType::BlockEnd(end))?;
+    for mut part in parts {
+        part.common_mut().owner_handle = handle;
+        document.add_entity(part)?;
+    }
+    Ok((name, handle))
+}
+
+pub(super) fn ordered_members<'a>(
+    document: &'a Document,
+    record: &BlockRecord,
+) -> Result<Vec<&'a EntityType>, Error> {
+    use acadrust::objects::ObjectType;
+    let mut members: Vec<_> = document.entities_in_block(&record.name).collect();
+    let mut orders = document.objects.values().filter_map(|object| match object {
+        ObjectType::SortEntitiesTable(order) if order.block_owner_handle == record.handle => {
+            Some(order)
+        }
+        _ => None,
+    });
+    if let Some(order) = orders.next() {
+        if orders.next().is_some() {
+            return Err(annotation::invalid("multiple draw-order records for block"));
+        }
+        let rank = |entity: &EntityType| order.effective_sort_handle(entity.common().handle);
+        members.sort_by_key(|entity| rank(entity));
+        if members
+            .windows(2)
+            .any(|pair| rank(pair[0]) == rank(pair[1]))
+        {
+            return Err(annotation::invalid("duplicate draw-order rank in block"));
+        }
+    }
+    Ok(members)
+}
+
+pub(super) fn import_table(
+    graphics: &IfccadDimensionGraphics,
+    id: u64,
+    drawing: &IfccadDocument,
+    document: &mut Document,
+    names: &Names,
+    losses: &mut Losses,
+) -> Result<Option<(String, Handle)>, Error> {
+    let mut back = inverse(document, drawing, names);
+    let mut numerics = PictureNumerics::default();
+    let prepare = graphics
+        .parts
+        .iter()
+        .enumerate()
+        .map(|(index, part)| {
+            let layer = part
+                .layer_id
+                .map(|id| {
+                    names
+                        .layers
+                        .get(&id)
+                        .map(String::as_str)
+                        .ok_or_else(|| invalid("missing table graphics layer"))
+                })
+                .transpose()?
+                .unwrap_or("0");
+            native_entity(
+                part.kind.clone().into(),
+                &part.appearance,
+                layer,
+                part.visible,
+                part.line_pattern_scale,
+                &mut back,
+                names,
+                &format!("p{index}"),
+                &mut numerics,
+            )
+        })
+        .collect::<Prepared<Vec<_>>>();
+    match prepare {
+        Ok(parts) => install_picture(document, "*T", parts).map(Some),
+        Err(problem) => {
+            let reason = match problem {
+                Problem::Unsupported(reason) => reason,
+                Problem::Invalid(error) => error.to_string(),
+            };
+            losses.note(format!("table {id} graphics: {reason}"));
+            Ok(None)
+        }
+    }
+}
+
+pub(super) fn capture_table(
+    w: &mut Writer<'_>,
+    table: &acadrust::entities::Table,
+) -> Result<Option<IfccadDimensionGraphics>, Error> {
+    let handle = table.common.handle;
+    let record = table
+        .block_record_handle
+        .and_then(|handle| {
+            w.document
+                .block_records
+                .iter()
+                .find(|record| record.handle == handle)
+        })
+        .or_else(|| w.document.block_records.get(&table.block_name));
+    let Some(record) = record else {
+        if table
+            .block_record_handle
+            .is_some_and(|handle| !handle.is_null())
+            || !table.block_name.is_empty()
+            || table
+                .common
+                .graphic_data
+                .as_ref()
+                .is_some_and(|data| !data.is_empty())
+        {
+            w.losses.note(format!(
+                "table {handle} graphics: no usable typed picture block"
+            ));
+        }
+        return Ok(None);
+    };
+    let mut staged = stage(w);
+    staged.table_picture = true;
+    let mut numerics = PictureNumerics::default();
+    let mut active = BTreeSet::from([record.name.to_ascii_lowercase()]);
+    let mut done = BTreeSet::new();
+    let local = IfccadPlacement {
+        origin: [0.0; 3],
+        x_axis: [1.0, 0.0, 0.0],
+        y_axis: [0.0, 1.0, 0.0],
+    };
+    let parts = (|| -> Prepared<Vec<Part>> {
+        if record.is_layout() || record.base_point != Vector3::ZERO {
+            return Err(unsupported(
+                "table picture block layout or nonzero base point",
+            ));
+        }
+        ordered_members(staged.document, record)?
+            .into_iter()
+            .enumerate()
+            .map(|(index, entity)| {
+                let mut part = cad_part(
+                    &mut staged,
+                    entity,
+                    &local,
+                    &mut active,
+                    &mut done,
+                    &format!("p{index}"),
+                    &mut numerics,
+                )?;
+                part.purpose = Purpose::Display;
+                Ok(part)
+            })
+            .collect()
+    })();
+    let parts = match parts {
+        Ok(parts) => parts,
+        Err(problem) => {
+            let reason = match problem {
+                Problem::Unsupported(reason) => reason,
+                Problem::Invalid(error) => error.to_string(),
+            };
+            w.losses.note(format!("table {handle} graphics: {reason}"));
+            return Ok(None);
+        }
+    };
+    if let Some(note) = numerics.summary(&format!("table {handle}"), Some(handle)) {
+        staged.losses.retained_note(note);
+    }
+    w.losses.merge(staged.losses);
+    w.drawing.blocks.extend(staged.drawing.blocks);
+    w.blocks = staged.blocks;
+    w.drawing.id_counters = staged.drawing.id_counters;
+    w.entity_ids.extend(staged.entity_ids);
+    Ok(Some(IfccadDimensionGraphics {
+        origin: Origin::SourceSnapshot,
+        parts,
+    }))
 }
 
 fn common_supported(source: &EntityCommon) -> Prepared<()> {
@@ -903,7 +1085,12 @@ fn numeric_tree(
     Ok(())
 }
 
-fn record_metadata(document: &Document, record: &BlockRecord, marker: bool) -> Prepared<()> {
+fn record_metadata(
+    document: &Document,
+    record: &BlockRecord,
+    marker: bool,
+    qualified_order: bool,
+) -> Prepared<()> {
     // Header content is separate from BLOCK_RECORD in the CAD model. It must
     // not disappear merely because the record itself is representable.
     let (start, end) = headers(document, record)?;
@@ -927,11 +1114,19 @@ fn record_metadata(document: &Document, record: &BlockRecord, marker: bool) -> P
         actual.linetype_handle = None;
         actual.entity_mode = None;
         actual.raw_record = None;
+        if qualified_order && marker {
+            // A BLOCK delimiter has no drawable color. Nested primitives
+            // inherit from their INSERT or carry their own appearance.
+            actual.color = baseline.color;
+        }
         if actual != baseline {
-            return Err(unsupported("picture block has unsupported header metadata"));
+            return Err(unsupported(&format!(
+                "picture block {} has unsupported header metadata",
+                record.name
+            )));
         }
     }
-    if document.objects.values().any(|object| matches!(object,
+    if !qualified_order && document.objects.values().any(|object| matches!(object,
         acadrust::objects::ObjectType::SortEntitiesTable(order) if order.block_owner_handle == record.handle
     )) {
         return Err(unsupported("external picture draw order is outside the qualified profile"));
@@ -1133,13 +1328,13 @@ fn cad_block(
     if record.is_layout() || record.flags.is_xref || record.flags.is_xref_overlay {
         return Err(unsupported("external/layout picture marker resource"));
     }
-    record_metadata(w.document, record, true)?;
-    let entities: Vec<_> = w.document.entities_in_block(name).cloned().collect();
+    record_metadata(w.document, record, true, w.table_picture)?;
+    let entities = ordered_members(w.document, record)?;
     for e in entities {
         let member_path = format!("{path}/marker {name}/member {}", e.common().handle);
         cad_part(
             w,
-            &e,
+            e,
             &IfccadPlacement {
                 origin: [0.; 3],
                 x_axis: [1., 0., 0.],
@@ -1202,7 +1397,7 @@ pub(super) fn capture(
             &mut BTreeSet::new(),
             &mut BTreeSet::new(),
         )?;
-        record_metadata(staged.document, record, false)?;
+        record_metadata(staged.document, record, false, false)?;
         for (index, e) in entities.into_iter().enumerate() {
             let losses_before = staged.losses.content_snapshot();
             match cad_part(

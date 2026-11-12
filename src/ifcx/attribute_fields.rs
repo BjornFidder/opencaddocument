@@ -89,7 +89,7 @@ fn cache_in(v: &Cache, objects: &HashMap<u64, Handle>) -> Result<CellValue, Erro
     result.formatted_value = v.formatted_value.clone();
     Ok(result)
 }
-fn code_out(
+pub(super) fn code_out(
     code: &str,
     children: &[Handle],
     objects: &[Handle],
