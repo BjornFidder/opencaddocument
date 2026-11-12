@@ -139,6 +139,11 @@ const UNITS: [&str; 25] = [
 /// IFCX file IO and conversion between [`IfccadDocument`] and [`Document`].
 pub struct Ifcx;
 
+#[cfg(feature = "mline-pilot")]
+mod mline_pilot;
+#[cfg(feature = "mline-pilot")]
+pub use mline_pilot::IfccadRoundtripContext;
+
 /// The result of importing a logical IFCCAD drawing into the shared CAD model.
 #[derive(Debug)]
 pub struct IfccadImportOutcome {
@@ -204,7 +209,35 @@ impl Ifcx {
     ///
     /// Returns an error if IFCCAD validation or CAD document construction fails.
     pub fn import_ifccad(&self, drawing: &IfccadDocument) -> Result<IfccadImportOutcome, Error> {
+        self.import_ifccad_inner(
+            drawing,
+            #[cfg(feature = "mline-pilot")]
+            None,
+        )
+    }
+
+    /// Convert a drawing and return the context needed to retain blocked content.
+    ///
+    /// The MLINE pilot accepts only its own ModelSpace preservation records.
+    /// Other records require an editing route that can keep them on save.
+    #[cfg(feature = "mline-pilot")]
+    pub fn import_ifccad_preserving(
+        &self,
+        drawing: &IfccadDocument,
+    ) -> Result<(IfccadImportOutcome, IfccadRoundtripContext), Error> {
+        let mut context = IfccadRoundtripContext::new(drawing);
+        let imported = self.import_ifccad_inner(drawing, Some(&mut context))?;
+        Ok((imported, context))
+    }
+
+    fn import_ifccad_inner(
+        &self,
+        drawing: &IfccadDocument,
+        #[cfg(feature = "mline-pilot")] context: Option<&mut IfccadRoundtripContext>,
+    ) -> Result<IfccadImportOutcome, Error> {
         ifccad::validate_ifccad_document(drawing)?;
+        #[cfg(feature = "mline-pilot")]
+        mline_pilot::check_preservation_scope(drawing)?;
         let mut losses = Losses::default();
         font::preflight_font_requests(drawing, &mut losses)?;
         let mut document = Document::new();
@@ -293,6 +326,10 @@ impl Ifcx {
         let mut handles = HashMap::new();
         for (owner, entities) in members.into_iter().chain(sheets).chain([model]) {
             for entity in entities {
+                #[cfg(feature = "mline-pilot")]
+                if owner.is_null() && mline_pilot::recognizes(drawing, entity) {
+                    continue;
+                }
                 if let Some(handle) =
                     add_in(&mut document, entity, owner, drawing, &names, &mut losses)?
                 {
@@ -359,6 +396,15 @@ impl Ifcx {
         dimension::associations_in(drawing, &mut document, &handles, &mut losses);
         leader::link_import(drawing, &mut document, &handles)?;
         annotation_leader::import(drawing, &mut document, &names, &handles, &mut losses)?;
+        #[cfg(feature = "mline-pilot")]
+        mline_pilot::restore(
+            drawing,
+            &mut document,
+            &names,
+            &mut handles,
+            &mut losses,
+            context,
+        )?;
         Ok(IfccadImportOutcome {
             document,
             losses: losses.into_vec(),
@@ -390,6 +436,33 @@ impl Ifcx {
     ///
     /// Returns an error if conversion or validation of the resulting drawing fails.
     pub fn export_ifccad(&self, document: &Document) -> Result<IfccadExportOutcome, Error> {
+        self.export_ifccad_inner(
+            document,
+            #[cfg(feature = "mline-pilot")]
+            None,
+        )
+    }
+
+    /// Export the current document together with blocked content from its import.
+    ///
+    /// Pass the context from the same editing session as `document`.
+    /// Successful conversion advances the session's ID watermarks.
+    #[cfg(feature = "mline-pilot")]
+    pub fn export_ifccad_preserving(
+        &self,
+        document: &Document,
+        context: &mut IfccadRoundtripContext,
+    ) -> Result<IfccadExportOutcome, Error> {
+        let outcome = self.export_ifccad_inner(document, Some(context))?;
+        context.advance_ids(outcome.drawing.id_counters);
+        Ok(outcome)
+    }
+
+    fn export_ifccad_inner(
+        &self,
+        document: &Document,
+        #[cfg(feature = "mline-pilot")] context: Option<&IfccadRoundtripContext>,
+    ) -> Result<IfccadExportOutcome, Error> {
         let mut drawing =
             load_ifccad_bytes(TEMPLATE.as_bytes(), Default::default())?.into_document();
         let info = &document.summary_info;
@@ -409,6 +482,10 @@ impl Ifcx {
             timestamp: rfc3339(now_seconds()),
         };
         drawing.drawing_id = get(DRAWING_ID).and_then(|id| id.parse().ok()).unwrap_or(1);
+        #[cfg(feature = "mline-pilot")]
+        if let Some(context) = context {
+            context.reserve_ids(&mut drawing)?;
+        }
         drawing.length_unit = unit_name(document.header.insertion_units);
         drawing.attribute_visibility = match document.header.attribute_visibility {
             0 => ifccad::IfccadAttributeVisibility::HideAll,
@@ -445,7 +522,17 @@ impl Ifcx {
         dimension::write_styles(&mut writer)?;
         multi_leader::export_styles(&mut writer)?;
 
-        for entity in document.model_space_entities() {
+        #[cfg(feature = "mline-pilot")]
+        let model_entities = mline_pilot::model_entities(document).into_iter();
+        #[cfg(not(feature = "mline-pilot"))]
+        let model_entities = document.model_space_entities();
+        for entity in model_entities {
+            #[cfg(feature = "mline-pilot")]
+            if matches!(entity, EntityType::MLine(_)) {
+                let opaque = mline_pilot::capture(&mut writer, entity)?;
+                writer.drawing.model.entities.push(opaque);
+                continue;
+            }
             if let Some(entity) = writer.entity(entity)? {
                 writer.drawing.model.entities.push(entity);
             }
@@ -481,6 +568,10 @@ impl Ifcx {
         annotation_hatch::export_all(&mut writer)?;
         annotation_policy::export(&mut writer)?;
         attributes::finish_export(&mut writer)?;
+        #[cfg(feature = "mline-pilot")]
+        if let Some(context) = context {
+            context.emit(&mut writer)?;
+        }
         ifccad::validate_ifccad_document(&writer.drawing)?;
         Ok(IfccadExportOutcome {
             drawing: writer.drawing,

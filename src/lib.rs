@@ -24,6 +24,8 @@ pub use format::{snap, Dwg, Dxf, Error, Format, Loss};
 #[cfg(feature = "ifcx")]
 /// The IFCCAD model and IO library used by [`Ifcx`].
 pub use ifccad;
+#[cfg(feature = "mline-pilot")]
+pub use ifcx::IfccadRoundtripContext;
 #[cfg(feature = "ifcx")]
 pub use ifcx::{IfccadExportOutcome, IfccadImportOutcome, Ifcx, SplineExchangeTarget};
 pub use placement::Placement;

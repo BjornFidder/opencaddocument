@@ -58,6 +58,8 @@ requirements. See [owned selections](docs/selection.md) and the
 also enables `selection` and provides [versioned storage](docs/selection-storage.md).
 The [reconstruction API](docs/selection-reconstruction.md) builds an independent
 candidate from an explicit subset and reports the result for each requested root.
+The optional [MLINE preservation pilot](docs/ifcx-mline-preservation.md)
+uses these APIs to save and reopen ModelSpace MLINEs in IFCCAD.
 
 ## Logical IFCCAD conversion
 

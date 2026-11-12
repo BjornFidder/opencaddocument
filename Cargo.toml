@@ -7,6 +7,7 @@ license = "MPL-2.0"
 repository = "https://github.com/HakanSeven12/opencaddocument"
 
 [features]
+mline-pilot = ["ifcx", "selection-storage"]
 selection = []
 selection-storage = ["selection", "dep:serde", "dep:rmp-serde"]
 serde = ["acadrust/serde", "dep:serde"]
