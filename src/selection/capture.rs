@@ -361,6 +361,9 @@ impl Capture<'_> {
     fn common(
         &mut self,
         k: SelectionRecordKey,
+        // A copy never carries the source's raw record, so the caller says
+        // whether the source had one.
+        had_raw_record: bool,
         c: &mut EntityCommon,
     ) -> Result<(), SelectionError> {
         let EntityCommon {
@@ -490,7 +493,7 @@ impl Capture<'_> {
             kind: SelectionRecordKind::Layer,
         })?;
         self.linetype(k, SelectionSlot::LineType, *linetype_handle, linetype)?;
-        if raw_record.take().is_some() {
+        if raw_record.take().is_some() || had_raw_record {
             self.evidence(
                 Some(k),
                 None,
@@ -530,8 +533,9 @@ impl Capture<'_> {
                             thickness: _,
                             normal: _,
                         } = line;
+                        let had_raw_record = line.common.raw_record.is_some();
                         let mut line = line.clone();
-                        self.common(k, &mut line.common)?;
+                        self.common(k, had_raw_record, &mut line.common)?;
                         SelectionPayload::Line(Box::new(line))
                     }
                     EntityType::MLine(mline) => {
@@ -561,8 +565,9 @@ impl Capture<'_> {
                             {}
                         }
                         let (style_handle, style_name) = (*style_handle, style_name.clone());
+                        let had_raw_record = mline.common.raw_record.is_some();
                         let mut mline = mline.clone();
-                        self.common(k, &mut mline.common)?;
+                        self.common(k, had_raw_record, &mut mline.common)?;
                         let effective = if style_handle.is_none_or(|h| h.is_null()) {
                             self.evidence(Some(k),Some(SelectionSlot::MLineStyle),CaptureEvidenceCode::ResolvedSourceDefault,"absent/null entity style handle uses the actual source header style");
                             Some(self.doc.header.current_multiline_style_handle)
