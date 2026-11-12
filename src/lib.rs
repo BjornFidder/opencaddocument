@@ -11,6 +11,10 @@ mod format;
 mod ifcx;
 mod placement;
 mod read;
+#[cfg(feature = "selection")]
+pub mod selection;
+#[cfg(feature = "selection-storage")]
+pub use selection::storage as selection_storage;
 
 // Everything acadrust offers is part of the model's surface, so callers name
 // one crate. Items defined here take precedence over the glob.
