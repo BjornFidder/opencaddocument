@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "acadrust"
 version = "0.6.8"
-source = "git+https://github.com/hakanaktt/acadrust.git?rev=d6ee5a9#d6ee5a90f8381b3ef86e3f8277028d259999af10"
+source = "git+https://github.com/hakanaktt/acadrust.git?rev=f3c996d#f3c996d15f70426c3b716558b0b5c4819150ec48"
 dependencies = [
  "anyhow",
  "bitflags",
