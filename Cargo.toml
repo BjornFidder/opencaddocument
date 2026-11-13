@@ -19,7 +19,7 @@ acadrust = { git = "https://github.com/hakanaktt/acadrust.git", rev = "c1f21da" 
 rmp-serde = { version = "=1.3.0", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 # ifccad only reads and writes IFCX; the mapping to `Document` lives here.
-ifccad = { git = "https://github.com/OpenAEC-Foundation/ifccad.git", rev = "71106c80efbae4c5ea5e1326a3983f3e2b25f1d7", optional = true }
+ifccad = { git = "https://github.com/OpenAEC-Foundation/ifccad.git", rev = "25514987b749efe5c34e9386ddac1b6f0dc1b71f", optional = true }
 web-time = { version = "1", optional = true }
 
 [dev-dependencies]
