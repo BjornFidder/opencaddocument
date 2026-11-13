@@ -2,9 +2,11 @@ use super::{empty_preservation, error, Handle, IfccadDocument, IfccadEntity, Ifc
 use crate::ifcx::{Names, Writer};
 use crate::{Document, Error};
 use ifccad::{
-    IfccadIdCounters, IfccadMode, IfccadOpaqueEntity, IfccadPreservationRecord,
-    IfccadPreservationSource, IfccadPreservationTarget,
+    IfccadIdCounters, IfccadMode, IfccadOpaqueEntity, IfccadPreservationBinding,
+    IfccadPreservationRecord, IfccadPreservationRecordId, IfccadPreservationSource,
+    IfccadPreservationTarget,
 };
+use std::collections::{BTreeMap, HashMap};
 
 /// IFCCAD state that belongs to the editing session of an imported document.
 ///
@@ -16,6 +18,12 @@ pub struct IfccadRoundtripContext {
     drawing_id: u64,
     counters: IfccadIdCounters,
     blocked: Vec<BlockedMline>,
+    packages: BTreeMap<IfccadPreservationRecordId, IfccadPreservationRecord>,
+    entities: HashMap<Handle, u64>,
+    layers: HashMap<Handle, u64>,
+    patterns: HashMap<Handle, IfccadLinePatternId>,
+    model_id: u64,
+    roots: HashMap<Handle, (IfccadPreservationRecordId, Vec<IfccadPreservationBinding>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -135,6 +143,12 @@ impl IfccadRoundtripContext {
             drawing_id: drawing.drawing_id,
             counters: drawing.id_counters,
             blocked: Vec::new(),
+            packages: BTreeMap::new(),
+            entities: HashMap::new(),
+            roots: HashMap::new(),
+            layers: HashMap::new(),
+            patterns: HashMap::new(),
+            model_id: drawing.model.id,
         }
     }
 
@@ -160,6 +174,15 @@ impl IfccadRoundtripContext {
             .flat_map(|envelope| &envelope.sources)
             .find(|source| source.id == record.source_id)
             .ok_or_else(|| error("missing preservation source"))?;
+        let backing = drawing
+            .preservation
+            .iter()
+            .flat_map(|envelope| &envelope.records)
+            .find(|backing| Some(backing.id) == record.storage_backing)
+            .ok_or_else(|| error("missing preservation backing"))?;
+        self.packages
+            .entry(backing.id)
+            .or_insert_with(|| backing.clone());
         self.blocked.push(BlockedMline {
             opaque: opaque.clone(),
             record: record.clone(),
@@ -171,28 +194,94 @@ impl IfccadRoundtripContext {
         Ok(())
     }
 
-    pub(in crate::ifcx) fn reserve_ids(&self, drawing: &mut IfccadDocument) -> Result<(), Error> {
+    pub(in crate::ifcx) fn remember_entities(&mut self, handles: &HashMap<u64, Handle>) {
+        self.entities
+            .extend(handles.iter().map(|(&id, &handle)| (handle, id)));
+    }
+
+    pub(super) fn remember_mline(&mut self, handle: Handle, record: &IfccadPreservationRecord) {
+        self.roots
+            .insert(handle, (record.id, record.bindings.clone()));
+    }
+
+    pub(in crate::ifcx) fn entity_id(&self, handle: Handle) -> Option<u64> {
+        self.entities.get(&handle).copied()
+    }
+
+    pub(in crate::ifcx) fn layer_id(&self, handle: Handle) -> Option<u64> {
+        self.layers.get(&handle).copied()
+    }
+
+    pub(in crate::ifcx) fn pattern_id(&self, handle: Handle) -> Option<IfccadLinePatternId> {
+        self.patterns.get(&handle).copied()
+    }
+
+    pub(super) fn package_namespace(&self, id: IfccadPreservationRecordId) -> String {
+        let base = format!("selection-{}", id.0);
+        let used = |name: &str| {
+            self.packages.values().any(|r| r.source_key == name)
+                || self.blocked.iter().any(|root| root.source.id == name)
+        };
+        if !used(&base) {
+            return base;
+        }
+        (1..)
+            .map(|suffix| format!("{base}-{suffix}"))
+            .find(|name| !used(name))
+            .expect("finite set of package names")
+    }
+
+    pub(in crate::ifcx) fn remember_resources(&mut self, document: &Document, names: &Names) {
+        self.layers.extend(
+            names
+                .layer_handles
+                .iter()
+                .map(|(&id, &handle)| (handle, id)),
+        );
+        self.patterns
+            .extend(names.line_patterns.iter().filter_map(|(&id, name)| {
+                document
+                    .line_types
+                    .get(name)
+                    .map(|pattern| (pattern.handle, id))
+            }));
+    }
+
+    pub(in crate::ifcx) fn mline_identity(
+        &self,
+        handle: Handle,
+    ) -> Option<(IfccadPreservationRecordId, Vec<IfccadPreservationBinding>)> {
+        self.roots.get(&handle).cloned()
+    }
+
+    pub(in crate::ifcx) fn reserve_ids(
+        &self,
+        document: &Document,
+        drawing: &mut IfccadDocument,
+    ) -> Result<(), Error> {
         if drawing.drawing_id != self.drawing_id || drawing.header.id != self.header_id {
             return Err(error(
                 "roundtrip context belongs to a different IFCCAD drawing",
             ));
         }
         drawing.id_counters = self.counters;
-        for item in &self.blocked {
-            let Some((id, _)) = item.resources.root_pattern else {
-                continue;
-            };
-            let next =
-                id.0.checked_add(1)
-                    .ok_or_else(|| error("cannot reserve retained line pattern ID"))?;
-            drawing.id_counters.next_line_pattern_id =
-                drawing.id_counters.next_line_pattern_id.max(next);
+        drawing.model.id = self.model_id;
+        if !document
+            .line_types
+            .iter()
+            .any(|pattern| self.pattern_id(pattern.handle) == Some(IfccadLinePatternId(0)))
+        {
+            drawing.line_patterns.retain(|pattern| pattern.id.0 != 0);
         }
         Ok(())
     }
 
-    pub(in crate::ifcx) fn advance_ids(&mut self, counters: IfccadIdCounters) {
-        self.counters = counters;
+    pub(in crate::ifcx) fn remember_export(&mut self, saved: SavedIdentities) {
+        self.counters = saved.counters;
+        self.entities.extend(saved.entities);
+        self.layers.extend(saved.layers);
+        self.patterns.extend(saved.patterns);
+        self.roots.extend(saved.roots);
     }
 
     pub(in crate::ifcx) fn emit(&self, writer: &mut Writer<'_>) -> Result<(), Error> {
@@ -225,8 +314,70 @@ impl IfccadRoundtripContext {
                 Some(_) => {}
                 None => envelope.sources.push(item.source.clone()),
             }
+            let backing = record.storage_backing.expect("retained backing");
+            if !envelope.records.iter().any(|r| r.id == backing) {
+                envelope.records.push(self.packages[&backing].clone());
+            }
             envelope.records.push(record);
         }
+        if let Some(envelope) = &mut writer.drawing.preservation {
+            envelope.records.sort_by_key(|r| r.id);
+        }
         Ok(())
+    }
+}
+
+pub(in crate::ifcx) struct SavedIdentities {
+    counters: IfccadIdCounters,
+    entities: HashMap<Handle, u64>,
+    layers: HashMap<Handle, u64>,
+    patterns: HashMap<Handle, IfccadLinePatternId>,
+    roots: HashMap<Handle, (IfccadPreservationRecordId, Vec<IfccadPreservationBinding>)>,
+}
+
+impl SavedIdentities {
+    pub(in crate::ifcx) fn from_writer(writer: &Writer<'_>) -> Self {
+        let entities = writer.entity_ids.clone();
+        let layers = writer
+            .document
+            .layers
+            .iter()
+            .filter_map(|layer| {
+                writer
+                    .layers
+                    .get(&layer.name.to_ascii_lowercase())
+                    .map(|&id| (layer.handle, id))
+            })
+            .collect();
+        let patterns = writer
+            .document
+            .line_types
+            .iter()
+            .filter_map(|pattern| {
+                exported_pattern(writer, pattern.handle).map(|id| (pattern.handle, id))
+            })
+            .collect();
+        let handles: HashMap<_, _> = entities.iter().map(|(&h, &id)| (id, h)).collect();
+        let roots = writer
+            .drawing
+            .preservation
+            .iter()
+            .flat_map(|p| &p.records)
+            .filter_map(|record| {
+                let Some(IfccadPreservationTarget::Entity(id)) = record.subject else {
+                    return None;
+                };
+                handles
+                    .get(&id)
+                    .map(|&handle| (handle, (record.id, record.bindings.clone())))
+            })
+            .collect();
+        Self {
+            counters: writer.drawing.id_counters,
+            entities,
+            layers,
+            patterns,
+            roots,
+        }
     }
 }

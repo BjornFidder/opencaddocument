@@ -75,7 +75,7 @@ const TEMPLATE: &str = r#"{
     "author": "OpenCAD",
     "timestamp": "1970-01-01T00:00:00Z"
   },
-  "imports": [{ "uri": "urn:example:ifccad:0.9.0" }],
+  "imports": [{ "uri": "urn:example:ifccad:0.10.0" }],
   "schemas": {},
   "data": [
     {
@@ -94,7 +94,7 @@ const TEMPLATE: &str = r#"{
           "nextLayoutId": 2,
           "nextLinePatternId": 1,
           "nextSymbolSourceId": 1,
-          "profileVersion": "0.9.0",
+          "profileVersion": "0.10.0",
           "nextUcsId": 1,
           "nextModelWindowId": 1
         }
@@ -461,15 +461,16 @@ impl Ifcx {
         document: &Document,
         context: &mut IfccadRoundtripContext,
     ) -> Result<IfccadExportOutcome, Error> {
-        let outcome = self.export_ifccad_inner(document, Some(context))?;
-        context.advance_ids(outcome.drawing.id_counters);
+        let mut candidate = context.clone();
+        let outcome = self.export_ifccad_inner(document, Some(&mut candidate))?;
+        *context = candidate;
         Ok(outcome)
     }
 
     fn export_ifccad_inner(
         &self,
         document: &Document,
-        #[cfg(feature = "mline-pilot")] context: Option<&IfccadRoundtripContext>,
+        #[cfg(feature = "mline-pilot")] mut context: Option<&mut IfccadRoundtripContext>,
     ) -> Result<IfccadExportOutcome, Error> {
         let mut drawing =
             load_ifccad_bytes(TEMPLATE.as_bytes(), Default::default())?.into_document();
@@ -491,8 +492,8 @@ impl Ifcx {
         };
         drawing.drawing_id = get(DRAWING_ID).and_then(|id| id.parse().ok()).unwrap_or(1);
         #[cfg(feature = "mline-pilot")]
-        if let Some(context) = context {
-            context.reserve_ids(&mut drawing)?;
+        if let Some(context) = context.as_deref() {
+            context.reserve_ids(document, &mut drawing)?;
         }
         drawing.length_unit = unit_name(document.header.insertion_units);
         drawing.attribute_visibility = match document.header.attribute_visibility {
@@ -502,6 +503,8 @@ impl Ifcx {
             _ => return Err(annotation::invalid("invalid ATTMODE")),
         };
         let mut writer = Writer {
+            #[cfg(feature = "mline-pilot")]
+            roundtrip: context.as_deref(),
             table_data_links: HashMap::new(),
             table_styles: HashMap::new(),
             table_picture: false,
@@ -536,14 +539,15 @@ impl Ifcx {
         table_style::export_styles(&mut writer)?;
 
         #[cfg(feature = "mline-pilot")]
-        let model_entities = mline_pilot::model_entities(document).into_iter();
+        let model_entities = mline_pilot::model_entities(document);
+        #[cfg(feature = "mline-pilot")]
+        let mut opaque = mline_pilot::capture_group(&mut writer, &model_entities)?;
         #[cfg(not(feature = "mline-pilot"))]
         let model_entities = document.model_space_entities();
         for entity in model_entities {
             #[cfg(feature = "mline-pilot")]
-            if matches!(entity, EntityType::MLine(_)) {
-                let opaque = mline_pilot::capture(&mut writer, entity)?;
-                writer.drawing.model.entities.push(opaque);
+            if let Some(root) = opaque.remove(&entity.common().handle) {
+                writer.drawing.model.entities.push(root);
                 continue;
             }
             if let Some(entity) = writer.entity(entity)? {
@@ -584,15 +588,24 @@ impl Ifcx {
         table::finish_export(&mut writer);
         table_resources::bind_export(&mut writer);
         #[cfg(feature = "mline-pilot")]
-        if let Some(context) = context {
+        if let Some(context) = context.as_deref() {
             context.emit(&mut writer)?;
         }
         ifccad::validate_ifccad_document(&writer.drawing)?;
-        Ok(IfccadExportOutcome {
+        #[cfg(feature = "mline-pilot")]
+        let saved = context
+            .as_deref()
+            .map(|_| mline_pilot::SavedIdentities::from_writer(&writer));
+        let outcome = IfccadExportOutcome {
             drawing: writer.drawing,
             losses: writer.losses.into_vec(),
             entity_ids: writer.entity_ids.into_iter().collect(),
-        })
+        };
+        #[cfg(feature = "mline-pilot")]
+        if let (Some(context), Some(saved)) = (context.take(), saved) {
+            context.remember_export(saved);
+        }
+        Ok(outcome)
     }
 }
 
@@ -752,6 +765,8 @@ fn add_in(
 }
 
 struct Writer<'a> {
+    #[cfg(feature = "mline-pilot")]
+    roundtrip: Option<&'a IfccadRoundtripContext>,
     table_data_links: HashMap<Handle, ifccad::IfccadTableDataLinkId>,
     table_styles: HashMap<Handle, ifccad::IfccadTableStyleId>,
     table_picture: bool,
@@ -799,6 +814,45 @@ struct Writer<'a> {
 }
 
 impl Writer<'_> {
+    fn entity_id(&mut self, handle: Handle) -> Result<u64, Error> {
+        if let Some(id) = self.entity_ids.get(&handle) {
+            return Ok(*id);
+        }
+        #[cfg(feature = "mline-pilot")]
+        let existing = self.roundtrip.and_then(|context| context.entity_id(handle));
+        #[cfg(not(feature = "mline-pilot"))]
+        let existing = None;
+        let id = match existing {
+            Some(id) => id,
+            None => self.drawing.id_counters.allocate_entity_id()?,
+        };
+        self.entity_ids.insert(handle, id);
+        Ok(id)
+    }
+
+    #[cfg(feature = "mline-pilot")]
+    fn mline_identity(
+        &mut self,
+        handle: Handle,
+    ) -> Result<
+        (
+            ifccad::IfccadPreservationRecordId,
+            Vec<ifccad::IfccadPreservationBinding>,
+        ),
+        Error,
+    > {
+        if let Some(identity) = self
+            .roundtrip
+            .and_then(|context| context.mline_identity(handle))
+        {
+            return Ok(identity);
+        }
+        Ok((
+            self.drawing.id_counters.allocate_preservation_record_id()?,
+            Vec::new(),
+        ))
+    }
+
     fn entity(&mut self, entity: &EntityType) -> Result<Option<IfccadEntity>, Error> {
         if !matches!(
             entity,
@@ -857,8 +911,7 @@ impl Writer<'_> {
             Some(id) => *id,
             None => self.layers.get("0").copied().unwrap_or(0),
         };
-        let id = self.drawing.id_counters.allocate_entity_id()?;
-        self.entity_ids.insert(common.handle, id);
+        let id = self.entity_id(common.handle)?;
         if let EntityType::Hatch(hatch) = entity {
             let sources: Vec<_> = hatch
                 .paths

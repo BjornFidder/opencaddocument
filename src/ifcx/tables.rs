@@ -322,7 +322,21 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
             pattern.clear();
         }
         let description = (!linetype.description.is_empty()).then(|| linetype.description.clone());
-        if key == "continuous" && pattern.is_empty() {
+        #[cfg(feature = "mline-pilot")]
+        let retained = writer
+            .roundtrip
+            .and_then(|context| context.pattern_id(linetype.handle));
+        #[cfg(not(feature = "mline-pilot"))]
+        let retained = None;
+        if key == "continuous"
+            && pattern.is_empty()
+            && retained.is_none_or(|id| id == IfccadLinePatternId(0))
+            && writer
+                .drawing
+                .line_patterns
+                .iter()
+                .any(|pattern| pattern.id == IfccadLinePatternId(0))
+        {
             if let Some(template) = writer
                 .drawing
                 .line_patterns
@@ -335,7 +349,16 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
             writer.line_patterns.insert(key, IfccadLinePatternId(0));
             continue;
         }
-        let id = writer.drawing.id_counters.allocate_line_pattern_id()?;
+        let id = match retained {
+            Some(id) => id,
+            None => writer.drawing.id_counters.allocate_line_pattern_id()?,
+        };
+        if id == IfccadLinePatternId(0) {
+            writer
+                .drawing
+                .line_patterns
+                .retain(|pattern| pattern.id != id);
+        }
         writer.line_patterns.insert(key, id);
         writer.drawing.line_patterns.push(IfccadLinePattern {
             id,
@@ -355,10 +378,23 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
                 writer
                     .losses
                     .note(format!("the linetype of layer {}", layer.name));
-                IfccadLinePatternId(0)
+                writer
+                    .line_patterns
+                    .get("continuous")
+                    .copied()
+                    .unwrap_or(IfccadLinePatternId(0))
             }
         };
-        let id = writer.drawing.id_counters.allocate_layer_id()?;
+        #[cfg(feature = "mline-pilot")]
+        let retained = writer
+            .roundtrip
+            .and_then(|context| context.layer_id(layer.handle));
+        #[cfg(not(feature = "mline-pilot"))]
+        let retained = None;
+        let id = match retained {
+            Some(id) => id,
+            None => writer.drawing.id_counters.allocate_layer_id()?,
+        };
         writer.layers.insert(layer.name.to_ascii_lowercase(), id);
         writer.drawing.layers.push(IfccadLayer {
             id,

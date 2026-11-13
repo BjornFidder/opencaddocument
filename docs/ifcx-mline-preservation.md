@@ -1,33 +1,29 @@
 # ModelSpace MLINE preservation
 
-Enable `mline-pilot` to capture ModelSpace MLINEs when writing IFCCAD. Each
-opaque entity points to one complete entity record in preservation envelope 1.
-The record uses provider `opencaddocument`, provider revision `mline-pilot-1`,
-and payload schema `opencaddocument.mline-pilot` version 1 with kind
-`AdapterSnapshot`. The payload bytes use
-[DocumentSelection storage version 1](selection-storage.md).
+Enable `mline-pilot` to capture the supported ModelSpace MLINEs into one
+shared package per capture group when writing IFCCAD. Each live opaque
+entity has a reciprocal complete record in preservation envelope 2. Its
+`storageBacking` selects a subject-free Shared record. The Shared record
+uses provider `opencaddocument`, revision `mline-selection-1` and payload
+schema `opencaddocument.document-selection` version 1, kind
+`AdapterSnapshot`. Its bytes use [DocumentSelection storage V1](selection-storage.md).
 
-The selection contains one MLINE root. Its namespace matches the record's
-source ID and its original CAD handle, written in decimal, matches the source
-key. The snapshot includes the style and its supported dependencies. The
-drawing supplies the current layer and common appearance. Capture reports
-unresolved dependencies through export diagnostics and writes coverage
-`Unknown` when a dependency is missing. The selection records the unresolved
-reference so it can be examined after reopening. Diagnostics also identify
-excluded DWG source bytes, saved graphics and derived flags. These exclusions
-are part of typed capture and do not by themselves change dependency coverage.
+The Shared source key is the selection namespace. An entity record uses
+`<namespace>/entity/<positive-decimal-source-handle>`. Import verifies the
+namespace and the selected MLINE root. It requests only live opaque roots,
+with current native layer, appearance and draw order. Supported style
+dependencies are shared within the selection. Root-local capture diagnostics
+report missing dependencies and typed capture exclusions.
 
-The writer emits snapshots without bindings or conditions. The reader also
-accepts one optional `root-linetype` binding to a drawing line pattern. A
-missing target blocks the MLINE. If a retained binding has an existing target,
-export follows that target by its CAD handle and keeps its ID reserved if the
-target disappears.
+A `root-linetype` binding with a missing native target blocks that root.
+Present resources follow their session identity. The original typed ID stays
+reserved when a resource disappears. Native appearance takes precedence for
+the rendered linetype once the declared binding is satisfied.
 
-Use `Ifcx::import_ifccad_preserving` to obtain the editable document and its
-roundtrip context. A valid snapshot that cannot be reconstructed stays in the
-context with a reason. Pass the same context to
-`Ifcx::export_ifccad_preserving` so the blocked record and its payload survive
-while native entities can be edited. Context-free import fails if it would
-have to discard a blocked root. The pilot also refuses editable import if
-the envelope contains preservation outside its supported ModelSpace MLINE
-scope. Invalid payloads and unsafe reconstruction targets produce errors.
+Use `Ifcx::import_ifccad_preserving` and keep its context with the editable
+Document. Pass it to `Ifcx::export_ifccad_preserving` on save. Applied MLINEs
+are captured again from the current Document. Blocked roots keep their
+original package bytes and live records. Deleting an applied MLINE removes its
+live root; an older package retained for another root may still contain its
+historical capture. Unknown provider shapes are transportable through the
+core; editable import is limited to the supported ModelSpace MLINE scope.

@@ -25,7 +25,7 @@ fn mline_pilot_roundtrips_existing_ifccad_envelope() {
     let file = opencaddocument::ifccad::load_ifccad_bytes(&bytes, Default::default()).unwrap();
     let drawing = file.document();
     assert!(drawing.model.entities[0].as_opaque().is_some());
-    assert_eq!(drawing.preservation.as_ref().unwrap().version, 1);
+    assert_eq!(drawing.preservation.as_ref().unwrap().version, 2);
     let out = Ifcx.import_ifccad(drawing).unwrap();
     assert!(out.losses.is_empty(), "{:?}", out.losses);
     assert!(matches!(
@@ -87,6 +87,52 @@ fn custom_mline_source() -> Document {
 }
 
 #[test]
+fn shared_selection_restores_both_live_roots_with_one_style() {
+    use opencaddocument::objects::ObjectType;
+    let mut source = custom_mline_source();
+    let handle = source
+        .model_space_entities()
+        .next()
+        .unwrap()
+        .common()
+        .handle;
+    let Some(EntityType::MLine(mut second)) = source.get_entity(handle).cloned() else {
+        panic!("expected the first MLINE");
+    };
+    second.common.handle = Default::default();
+    second.translate(Vector3::new(10.0, 0.0, 0.0));
+    source
+        .add_entity(EntityType::Line(Line::from_points(
+            Vector3::ZERO,
+            Vector3::new(1.0, 1.0, 0.0),
+        )))
+        .unwrap();
+    source.add_entity(EntityType::MLine(second)).unwrap();
+    let drawing = Ifcx.export_ifccad(&source).unwrap().drawing;
+    let opened = Ifcx.import_ifccad(&drawing).unwrap();
+    let style_handles: Vec<_> = opened
+        .document
+        .model_space_entities()
+        .filter_map(|e| {
+            if let EntityType::MLine(mline) = e {
+                mline.style_handle
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(style_handles.len(), 2);
+    assert_eq!(style_handles[0], style_handles[1]);
+    assert!(
+        matches!(opened.document.objects.get(&style_handles[0]), Some(ObjectType::MLineStyle(style)) if style.name == "Wall edges")
+    );
+    let roundtrip = Ifcx.export_ifccad(&opened.document).unwrap().drawing;
+    assert!(roundtrip.model.entities[0].as_opaque().is_some());
+    assert!(roundtrip.model.entities[1].as_native().is_some());
+    assert!(roundtrip.model.entities[2].as_opaque().is_some());
+}
+
+#[test]
 fn missing_style_dependency_is_diagnosed_and_retained() {
     use opencaddocument::ifccad::{
         encode_ifccad_document, load_ifccad_bytes, IfccadPreservationDependencyCoverage,
@@ -112,7 +158,7 @@ fn missing_style_dependency_is_diagnosed_and_retained() {
 
     let file = load_ifccad_bytes(&bytes, Default::default()).unwrap();
     let drawing = file.document();
-    let record = &drawing.preservation.as_ref().unwrap().records[0];
+    let record = &drawing.preservation.as_ref().unwrap().records[1];
     assert_eq!(
         record.dependency_coverage,
         IfccadPreservationDependencyCoverage::Unknown
@@ -130,7 +176,7 @@ fn missing_style_dependency_is_diagnosed_and_retained() {
     let bytes = encode_ifccad_document(&saved.drawing).unwrap();
     let reopened = load_ifccad_bytes(bytes.bytes(), Default::default()).unwrap();
     assert_eq!(
-        &reopened.document().preservation.as_ref().unwrap().records[0],
+        &reopened.document().preservation.as_ref().unwrap().records[1],
         record
     );
     let (_, context) = Ifcx.import_ifccad_preserving(reopened.document()).unwrap();
@@ -237,7 +283,7 @@ fn custom_mline_blocked_by_circle_survives_edit_and_reopen() {
     let original = file.document();
     let opaque = original.model.entities[0].as_opaque().unwrap();
     let circle_id = original.model.entities[1].id();
-    let original_record = &original.preservation.as_ref().unwrap().records[0];
+    let original_record = &original.preservation.as_ref().unwrap().records[1];
     let (mut imported, mut context) = Ifcx.import_ifccad_preserving(original).unwrap();
     let blocked: Vec<_> = context.blocked_entities().collect();
     assert_eq!(blocked.len(), 1);
@@ -263,7 +309,7 @@ fn custom_mline_blocked_by_circle_survives_edit_and_reopen() {
     let drawing = file.document();
     assert_eq!(drawing.model.entities[0].id(), opaque.id);
     assert_eq!(
-        drawing.preservation.as_ref().unwrap().records.as_slice(),
+        &drawing.preservation.as_ref().unwrap().records[1..],
         std::slice::from_ref(original_record)
     );
     let (reopened, context) = Ifcx.import_ifccad_preserving(drawing).unwrap();
@@ -282,7 +328,7 @@ fn custom_mline_blocked_by_circle_survives_edit_and_reopen() {
         .find(|p| p.name == "Wall dash")
         .unwrap()
         .id;
-    bound.preservation.as_mut().unwrap().records[0]
+    bound.preservation.as_mut().unwrap().records[1]
         .bindings
         .push(IfccadPreservationBinding {
             slot: "root-linetype".into(),
@@ -301,9 +347,9 @@ fn custom_mline_blocked_by_circle_survives_edit_and_reopen() {
         .find(|p| p.name == "Wall dash")
         .unwrap()
         .id;
-    assert_ne!(exported_pattern, pattern_id);
+    assert_eq!(exported_pattern, pattern_id);
     assert_eq!(
-        saved.preservation.as_ref().unwrap().records[0].bindings[0].target,
+        saved.preservation.as_ref().unwrap().records[1].bindings[0].target,
         IfccadPreservationTarget::LinePattern(exported_pattern)
     );
 
@@ -316,7 +362,7 @@ fn custom_mline_blocked_by_circle_survives_edit_and_reopen() {
         .drawing;
     assert!(saved.line_patterns.iter().all(|p| p.id != pattern_id));
     assert_eq!(
-        saved.preservation.as_ref().unwrap().records[0].bindings[0].target,
+        saved.preservation.as_ref().unwrap().records[1].bindings[0].target,
         IfccadPreservationTarget::LinePattern(pattern_id)
     );
 }
@@ -336,12 +382,15 @@ fn rejects_other_preservation_before_an_edit_can_drop_it() {
     for detached in [false, true] {
         let mut drawing = original.clone();
         let envelope = drawing.preservation.as_mut().unwrap();
+        let inline = envelope.records[0].payload.clone();
         let record = &mut envelope.records[1];
         if detached {
             record.subject = None;
-            drawing.model.entities.remove(1);
+            record.storage_backing = None;
+            record.payload = inline;
+            drawing.model.entities.remove(0);
         } else {
-            record.payload.schema = "foreign.example".into();
+            envelope.records[0].payload.as_mut().unwrap().schema = "foreign.example".into();
         }
         let bytes = encode_ifccad_document(&drawing).unwrap();
         let file = load_ifccad_bytes(bytes.bytes(), Default::default()).unwrap();
@@ -364,8 +413,17 @@ fn blocked_mline_survives_live_edit_and_delete() {
     };
     use opencaddocument::tables::{Layer, LineType};
 
-    let mut source = Document::new();
-    source.header.insertion_units = 4;
+    let mut source = custom_mline_source();
+    let handle = source
+        .model_space_entities()
+        .next()
+        .unwrap()
+        .common()
+        .handle;
+    let Some(EntityType::MLine(template)) = source.get_entity(handle).cloned() else {
+        panic!("missing template")
+    };
+    source.remove_entity(handle).unwrap();
     let mut layer = Layer::new("B layer");
     layer.handle = source.allocate_handle();
     let layer_handle = layer.handle;
@@ -374,8 +432,9 @@ fn blocked_mline_survives_live_edit_and_delete() {
     pattern.handle = source.allocate_handle();
     source.line_types.add(pattern).unwrap();
     for x in [2.0, 12.0] {
-        let mut mline =
-            MLine::from_points(&[Vector3::new(x, 3.0, 0.0), Vector3::new(x + 3.0, 3.0, 0.0)]);
+        let mut mline = template.clone();
+        mline.common.handle = Default::default();
+        mline.translate(Vector3::new(x, 3.0, 0.0));
         if x == 12.0 {
             mline.common.layer = "B layer".into();
             mline.common.layer_handle = Some(layer_handle);
@@ -401,7 +460,8 @@ fn blocked_mline_survives_live_edit_and_delete() {
     };
     b.appearance.as_mut().unwrap().appearance.line_pattern = IfccadMode::Explicit(pattern);
     let b = b.clone();
-    let missing = IfccadLinePatternId(drawing.id_counters.next_line_pattern_id);
+    let missing = IfccadLinePatternId(250);
+    drawing.id_counters.next_line_pattern_id = 251;
     let record = drawing
         .preservation
         .as_mut()
@@ -416,7 +476,34 @@ fn blocked_mline_survives_live_edit_and_delete() {
         target: IfccadPreservationTarget::LinePattern(missing),
     });
     let original = record.clone();
+    let original_backing = drawing
+        .preservation
+        .as_ref()
+        .unwrap()
+        .records
+        .iter()
+        .find(|record| Some(record.id) == original.storage_backing)
+        .unwrap()
+        .clone();
+    assert_eq!(drawing.preservation.as_ref().unwrap().records.len(), 3);
+    let captured = opencaddocument::selection_storage::decode(
+        &original_backing.payload.as_ref().unwrap().bytes,
+    )
+    .unwrap();
+    assert_eq!(captured.roots().len(), 2);
+    drop(source);
     let bytes = encode_ifccad_document(&drawing).unwrap();
+    let cbor_input = opencaddocument::ifccad::encode_ifccad_cbor_document(&drawing).unwrap();
+    let review = std::env::var_os("IFCCAD_MLINE_REVIEW_DIR").map(std::path::PathBuf::from);
+    if let Some(dir) = &review {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("mline-shared-input.ifcx"), bytes.bytes()).unwrap();
+        std::fs::write(
+            dir.join("mline-shared-input.ifccad.cbor"),
+            cbor_input.bytes(),
+        )
+        .unwrap();
+    }
     let file = load_ifccad_bytes(bytes.bytes(), Default::default()).unwrap();
     let drawing = file.document();
     assert!(Ifcx.import_ifccad(drawing).is_err());
@@ -436,6 +523,11 @@ fn blocked_mline_survives_live_edit_and_delete() {
     unrelated.handle = imported.document.allocate_handle();
     imported.document.line_types.add(unrelated).unwrap();
 
+    let native_handle = imported.entity_handles[&drawing.model.entities[2].id()];
+    let Some(EntityType::Line(line)) = imported.document.get_entity_mut(native_handle) else {
+        panic!("missing native line")
+    };
+    line.end = Vector3::new(9.0, 8.0, 0.0);
     let mut check = |document: &Document, live: bool| {
         let result = Ifcx
             .export_ifccad_preserving(document, &mut context)
@@ -443,6 +535,28 @@ fn blocked_mline_survives_live_edit_and_delete() {
         let bytes = encode_ifccad_document(&result.drawing).unwrap();
         let file = load_ifccad_bytes(bytes.bytes(), Default::default()).unwrap();
         let saved = file.document();
+        let cbor = opencaddocument::ifccad::encode_ifccad_cbor_document(saved).unwrap();
+        if let Some(dir) = review.as_ref().filter(|_| !live) {
+            std::fs::write(dir.join("mline-shared-after-edit.ifcx"), bytes.bytes()).unwrap();
+            std::fs::write(
+                dir.join("mline-shared-after-edit.ifccad.cbor"),
+                cbor.bytes(),
+            )
+            .unwrap();
+        }
+        let cbor_read =
+            opencaddocument::ifccad::load_ifccad_cbor_bytes(cbor.bytes(), Default::default())
+                .unwrap();
+        assert_eq!(cbor_read.document(), saved);
+        let records = &saved.preservation.as_ref().unwrap().records;
+        assert_eq!(
+            records.iter().find(|r| r.id == original_backing.id),
+            Some(&original_backing)
+        );
+        assert_eq!(
+            records.iter().filter(|r| r.payload.is_some()).count(),
+            if live { 2 } else { 1 }
+        );
         assert_eq!(saved.model.entities.len(), if live { 3 } else { 2 });
         let preserved = saved.model.entities[usize::from(live)].as_opaque().unwrap();
         assert_eq!(preserved.id, b.id);
@@ -473,14 +587,18 @@ fn blocked_mline_survives_live_edit_and_delete() {
         assert!(saved
             .line_patterns
             .iter()
-            .any(|pattern| pattern.name == "Unrelated"));
+            .any(|pattern| pattern.name == "Unrelated" && pattern.id.0 > missing.0));
         assert!(saved
             .line_patterns
             .iter()
             .all(|pattern| pattern.id != missing));
         assert!(saved.id_counters.next_line_pattern_id > missing.0);
-        let (reopened, context) = Ifcx.import_ifccad_preserving(saved).unwrap();
+        let (reopened, context) = Ifcx.import_ifccad_preserving(cbor_read.document()).unwrap();
         assert_eq!(context.blocked_entities().count(), 1);
+        let native = reopened.entity_handles[&drawing.model.entities[2].id()];
+        assert!(
+            matches!(reopened.document.get_entity(native), Some(EntityType::Line(line)) if line.end == Vector3::new(9.0, 8.0, 0.0))
+        );
         let points: Vec<_> = reopened
             .document
             .entities()
@@ -502,6 +620,6 @@ fn blocked_mline_survives_live_edit_and_delete() {
     let first = check(&imported.document, true);
     imported.document.remove_entity(handle).unwrap();
     let second = check(&imported.document, false);
-    assert!(second.next_entity_id > first.next_entity_id);
+    assert!(second.next_entity_id >= first.next_entity_id);
     assert!(second.next_preservation_record_id >= first.next_preservation_record_id);
 }

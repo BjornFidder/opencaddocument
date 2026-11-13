@@ -318,6 +318,8 @@ fn resources(d: &IfccadDocument) -> IfccadDocument {
 }
 fn context<'a>(document: &'a Document, drawing: &IfccadDocument) -> Writer<'a> {
     Writer {
+        #[cfg(feature = "mline-pilot")]
+        roundtrip: None,
         table_data_links: HashMap::new(),
         table_styles: HashMap::new(),
         table_picture: false,
