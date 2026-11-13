@@ -693,17 +693,15 @@ pub(super) fn ordered_members<'a>(
         }
         _ => None,
     });
-    if let Some(order) = orders.next() {
-        if orders.next().is_some() {
-            return Err(annotation::invalid("multiple draw-order records for block"));
-        }
+    // Drawings do carry two draw-order records for a block, or two members
+    // sharing a rank. Neither says which order wins, so the members keep the
+    // order they are stored in instead of failing the whole save.
+    if let (Some(order), None) = (orders.next(), orders.next()) {
         let rank = |entity: &EntityType| order.effective_sort_handle(entity.common().handle);
-        members.sort_by_key(|entity| rank(entity));
-        if members
-            .windows(2)
-            .any(|pair| rank(pair[0]) == rank(pair[1]))
-        {
-            return Err(annotation::invalid("duplicate draw-order rank in block"));
+        let mut sorted = members.clone();
+        sorted.sort_by_key(|entity| rank(entity));
+        if sorted.windows(2).all(|pair| rank(pair[0]) != rank(pair[1])) {
+            members = sorted;
         }
     }
     Ok(members)
