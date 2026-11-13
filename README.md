@@ -28,6 +28,12 @@ With the `ifcx` feature, the `Ifcx` format reads and writes IFCX through
   texts, MText, hatches, all nine ordinary dimension kinds and block inserts.
   The development Dimension expansion uses IFCCAD profile 0.2.0/CBOR2; see
   [qualified kinds and limitations](docs/ifcx-dimension-kinds.md).
+- Drawing-wide plot-style mode (`PSTYLEMODE`), the layout table name and the
+  apply flag are mapped both ways. IFCX conversion reports unsupported named
+  entity and layer assignments. When the RGB fallback of an ordinary entity or
+  layer conflicts with its ACI identity, CAD export keeps the authored RGB as
+  True Color and reports the lost index. External CTB/STB contents remain
+  application resources.
 - Stored dimension graphics transfer in both directions using native CAD
   picture blocks within a supported planar profile. Unsupported pictures are
   omitted as a whole with a loss report; the supported definition is retained

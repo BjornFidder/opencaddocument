@@ -27,7 +27,8 @@ use ifccad::{
     IfccadColor, IfccadDocument, IfccadEntity, IfccadEntityAppearance, IfccadEntityKind,
     IfccadFilledQuadrilateral, IfccadHeader, IfccadLinePatternGeneration, IfccadLinePatternId,
     IfccadMode, IfccadNativeEntity, IfccadPaperLayout, IfccadPlacement, IfccadPlanarPolylineWidths,
-    IfccadSymbolSourceId, IfccadText, IfccadTextStyleId, IfccadUcsId, IfccadUcsSelection,
+    IfccadPlotStyleMode, IfccadSymbolSourceId, IfccadText, IfccadTextStyleId, IfccadUcsId,
+    IfccadUcsSelection,
 };
 
 use crate::{Document, Error, Format, Loss, Placement};
@@ -246,6 +247,8 @@ impl Ifcx {
         font::preflight_font_requests(drawing, &mut losses)?;
         let mut document = Document::new();
         document.header.insertion_units = unit_code(&drawing.length_unit);
+        document.header.plotstyle_mode =
+            drawing.plot_style_mode == IfccadPlotStyleMode::ColorDependent;
         document.header.attribute_visibility = match drawing.attribute_visibility {
             ifccad::IfccadAttributeVisibility::Normal => 1,
             ifccad::IfccadAttributeVisibility::HideAll => 0,
@@ -496,6 +499,11 @@ impl Ifcx {
             context.reserve_ids(document, &mut drawing)?;
         }
         drawing.length_unit = unit_name(document.header.insertion_units);
+        drawing.plot_style_mode = if document.header.plotstyle_mode {
+            IfccadPlotStyleMode::ColorDependent
+        } else {
+            IfccadPlotStyleMode::Named
+        };
         drawing.attribute_visibility = match document.header.attribute_visibility {
             0 => ifccad::IfccadAttributeVisibility::HideAll,
             1 => ifccad::IfccadAttributeVisibility::Normal,
@@ -759,7 +767,17 @@ fn add_in(
             )),
         }
     }
+    let cad_color = converted.common().color;
     let handle = document.add_entity(converted)?;
+    if let IfccadMode::Explicit(color) = &entity.appearance.color {
+        note_aci_fallback(
+            losses,
+            color,
+            cad_color,
+            handle,
+            format_args!("IFCCAD entity {}", entity.id),
+        );
+    }
     annotation::import_entity(&entity.kind, handle, document, names, losses)?;
     Ok(Some(handle))
 }
@@ -907,6 +925,12 @@ impl Writer<'_> {
         }
         annotation_dimension::export_entity(self, entity, &mut kind)?;
         let common = entity.common();
+        note_entity_plot_style_loss(
+            self.document,
+            &mut self.losses,
+            common,
+            format_args!("{}", entity.as_entity().entity_type()),
+        );
         let layer_id = match self.layers.get(&common.layer.to_ascii_lowercase()) {
             Some(id) => *id,
             None => self.layers.get("0").copied().unwrap_or(0),
@@ -1297,6 +1321,7 @@ impl Writer<'_> {
 #[derive(Default)]
 struct Losses {
     content: BTreeMap<String, usize>,
+    located: Vec<Loss>,
     retained: Vec<Loss>,
 }
 
@@ -1306,7 +1331,7 @@ impl Losses {
     }
 
     fn has_content_loss(&self) -> bool {
-        !self.content.is_empty()
+        !self.content.is_empty() || !self.located.is_empty()
     }
     fn content_snapshot(&self) -> BTreeMap<String, usize> {
         self.content.clone()
@@ -1314,10 +1339,18 @@ impl Losses {
     fn retained_note(&mut self, note: Loss) {
         self.retained.push(note);
     }
+
+    fn located_loss(&mut self, handle: Handle, message: String) {
+        self.located.push(Loss {
+            handle: (!handle.is_null()).then_some(handle),
+            message,
+        });
+    }
     fn merge(&mut self, other: Self) {
         for (what, count) in other.content {
             *self.content.entry(what).or_default() += count;
         }
+        self.located.extend(other.located);
         self.retained.extend(other.retained);
     }
     fn locate_new_content(&mut self, before: &BTreeMap<String, usize>, prefix: &str) {
@@ -1344,6 +1377,7 @@ impl Losses {
                     n => format!("{what}: not converted ({n}×)"),
                 },
             })
+            .chain(self.located)
             .chain(self.retained)
             .collect()
     }
@@ -1787,6 +1821,67 @@ fn color_in(color: &IfccadColor) -> Color {
                 }
                 _ => Color::Rgb { r, g, b },
             }
+        }
+    }
+}
+
+fn note_aci_fallback(
+    losses: &mut Losses,
+    source: &IfccadColor,
+    converted: Color,
+    handle: Handle,
+    location: std::fmt::Arguments<'_>,
+) {
+    if let (Some((system, index)), Color::Rgb { .. }) = (source.indexed_identity(), converted) {
+        if system.eq_ignore_ascii_case("ACI") && (1..=255).contains(index) {
+            losses.located_loss(
+                handle,
+                format!("{location}: ACI {index} omitted because the stored RGB differs from the CAD palette. Exported as True Color."),
+            );
+        }
+    }
+}
+
+fn plot_style_name(document: &Document, style: Handle) -> Option<&str> {
+    use acadrust::objects::ObjectType;
+
+    let dictionary = document.get_subdictionary("ACAD_PLOTSTYLENAME")?;
+    let entries = match document.objects.get(&dictionary)? {
+        ObjectType::Dictionary(dictionary) => &dictionary.entries,
+        ObjectType::DictionaryWithDefault(dictionary) => &dictionary.entries,
+        _ => return None,
+    };
+    entries
+        .iter()
+        .find_map(|(name, handle)| (*handle == style).then_some(name.as_str()))
+}
+
+fn note_plot_style_loss(
+    document: &Document,
+    losses: &mut Losses,
+    style: Handle,
+    handle: Handle,
+    location: std::fmt::Arguments<'_>,
+) {
+    let assignment = match plot_style_name(document, style) {
+        Some(name) => format!("plot style {name:?}"),
+        None => format!("plot style handle {style}"),
+    };
+    losses.located_loss(
+        handle,
+        format!("{location}: named {assignment} assignment omitted. IFCCAD has no named plot-style assignment field."),
+    );
+}
+
+fn note_entity_plot_style_loss(
+    document: &Document,
+    losses: &mut Losses,
+    common: &EntityCommon,
+    location: std::fmt::Arguments<'_>,
+) {
+    if common.plotstyle_flags == 0b11 {
+        if let Some(style) = common.plotstyle_handle.filter(|style| !style.is_null()) {
+            note_plot_style_loss(document, losses, style, common.handle, location);
         }
     }
 }

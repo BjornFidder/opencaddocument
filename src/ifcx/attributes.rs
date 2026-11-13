@@ -196,6 +196,12 @@ pub(super) fn children_out(
         if !a.common.handle.is_null() {
             w.entity_ids.insert(a.common.handle, id);
         }
+        note_entity_plot_style_loss(
+            w.document,
+            &mut w.losses,
+            &a.common,
+            format_args!("INSERT {} attribute {}", i.common.handle, a.tag),
+        );
         result.push(IfccadBlockAttribute {
             id,
             visible: !a.common.invisible,
@@ -326,6 +332,15 @@ pub(super) fn children_in(
             .cloned()
             .ok_or_else(|| annotation::invalid("attribute layer unavailable"))?;
         appearance_in(&a.appearance, names, &mut v.common, losses);
+        if let IfccadMode::Explicit(color) = &a.appearance.color {
+            note_aci_fallback(
+                losses,
+                color,
+                v.common.color,
+                v.common.handle,
+                format_args!("IFCCAD attribute {}", a.id),
+            );
+        }
         v.common.invisible = !a.visible;
         v.common.linetype_scale = a.line_pattern_scale;
         handles.insert(a.id, v.common.handle);
