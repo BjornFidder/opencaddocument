@@ -52,6 +52,10 @@ mod leader_graphics;
 mod multi_leader;
 mod spline;
 pub use spline::SplineExchangeTarget;
+mod table;
+mod table_fields;
+mod table_resources;
+mod table_style;
 mod tables;
 mod text;
 
@@ -71,7 +75,7 @@ const TEMPLATE: &str = r#"{
     "author": "OpenCAD",
     "timestamp": "1970-01-01T00:00:00Z"
   },
-  "imports": [{ "uri": "urn:example:ifccad:0.8.0" }],
+  "imports": [{ "uri": "urn:example:ifccad:0.9.0" }],
   "schemas": {},
   "data": [
     {
@@ -90,7 +94,7 @@ const TEMPLATE: &str = r#"{
           "nextLayoutId": 2,
           "nextLinePatternId": 1,
           "nextSymbolSourceId": 1,
-          "profileVersion": "0.8.0",
+          "profileVersion": "0.9.0",
           "nextUcsId": 1,
           "nextModelWindowId": 1
         }
@@ -271,6 +275,7 @@ impl Ifcx {
         annotation::read_scales(drawing, &mut document, &mut names);
         annotation_views::import(drawing, &mut document, &mut names)?;
         tables::read(drawing, &mut document, &mut names, &mut losses)?;
+        table_resources::allocate(drawing, &mut document, &mut names);
 
         // Every definition exists before any member is converted, so inserts
         // of blocks defined later in the file resolve.
@@ -315,6 +320,7 @@ impl Ifcx {
         leader::prepare_none_arrow(drawing, &mut document)?;
         dimension::read_styles(drawing, &mut document, &mut names, &mut losses)?;
         multi_leader::import_styles(drawing, &mut document, &mut names)?;
+        table_style::import_styles(drawing, &mut document, &mut names)?;
         let papers = layout::read(drawing, &mut document, &mut losses)?;
         let mut sheets: Vec<&IfccadPaperLayout> = drawing.paper_layouts.iter().collect();
         sheets.sort_by_key(|paper| paper.tab_index);
@@ -359,6 +365,8 @@ impl Ifcx {
             }
         }
         attributes::finish_import(drawing, &mut document, &names, &handles, &mut losses)?;
+        table::finish_import(drawing, &mut document, &mut handles, &mut losses)?;
+        table_resources::import(drawing, &mut document, &names, &handles, &mut losses)?;
         // Hatch boundaries refer to entities that may come after them.
         let scopes = drawing.blocks.iter().map(|block| &block.entities);
         let papers_entities = drawing.paper_layouts.iter().map(|paper| &paper.entities);
@@ -494,6 +502,9 @@ impl Ifcx {
             _ => return Err(annotation::invalid("invalid ATTMODE")),
         };
         let mut writer = Writer {
+            table_data_links: HashMap::new(),
+            table_styles: HashMap::new(),
+            table_picture: false,
             annotation_scales: HashMap::new(),
             multi_leader_styles: HashMap::new(),
             annotation_views: HashMap::new(),
@@ -521,6 +532,8 @@ impl Ifcx {
         tables::write(&mut writer)?;
         dimension::write_styles(&mut writer)?;
         multi_leader::export_styles(&mut writer)?;
+        table_resources::export(&mut writer)?;
+        table_style::export_styles(&mut writer)?;
 
         #[cfg(feature = "mline-pilot")]
         let model_entities = mline_pilot::model_entities(document).into_iter();
@@ -568,6 +581,8 @@ impl Ifcx {
         annotation_hatch::export_all(&mut writer)?;
         annotation_policy::export(&mut writer)?;
         attributes::finish_export(&mut writer)?;
+        table::finish_export(&mut writer);
+        table_resources::bind_export(&mut writer);
         #[cfg(feature = "mline-pilot")]
         if let Some(context) = context {
             context.emit(&mut writer)?;
@@ -619,6 +634,8 @@ fn link_hatches(
 /// Names of what IFCX refers to by id.
 #[derive(Default)]
 struct Names {
+    table_data_links: HashMap<ifccad::IfccadTableDataLinkId, Handle>,
+    table_styles: HashMap<ifccad::IfccadTableStyleId, Handle>,
     multi_leader_styles: HashMap<ifccad::IfccadMultiLeaderStyleId, Handle>,
     annotation_views: HashMap<ifccad::IfccadAnnotationViewId, Handle>,
     model_window_handles: HashMap<ifccad::IfccadModelWindowId, Handle>,
@@ -660,6 +677,9 @@ fn add_in(
         IfccadEntityKind::Leader(source) => Some(leader::leader_in(source, document, names)?),
         IfccadEntityKind::Tolerance(source) => Some(leader::tolerance_in(source, document, names)?),
         IfccadEntityKind::Spline(source) => Some(EntityType::Spline(spline::to_cad(source)?)),
+        IfccadEntityKind::Table(source) => Some(EntityType::Table(Box::new(table::input(
+            source, document, names,
+        )?))),
         // A hatch whose boundary cannot be rebuilt is a loss, not a failed import.
         IfccadEntityKind::Hatch(source) => hatch::hatch_in(source).ok(),
         IfccadEntityKind::MultiLeader(source) => {
@@ -703,6 +723,18 @@ fn add_in(
         IfccadEntityKind::Tolerance(value) => value.graphics.as_ref(),
         _ => None,
     };
+    if let (IfccadEntityKind::Table(source), EntityType::Table(target)) =
+        (&entity.kind, &mut converted)
+    {
+        if let Some(graphics) = &source.graphics {
+            if let Some((name, handle)) = dimension_graphics::import_table(
+                graphics, entity.id, drawing, document, names, losses,
+            )? {
+                target.block_name = name;
+                target.block_record_handle = Some(handle);
+            }
+        }
+    }
     if let Some(picture) = picture {
         // A saved picture that cannot be restored is dropped; the entity
         // is drawn from its own data.
@@ -720,6 +752,9 @@ fn add_in(
 }
 
 struct Writer<'a> {
+    table_data_links: HashMap<Handle, ifccad::IfccadTableDataLinkId>,
+    table_styles: HashMap<Handle, ifccad::IfccadTableStyleId>,
+    table_picture: bool,
     multi_leader_styles: HashMap<Handle, ifccad::IfccadMultiLeaderStyleId>,
     annotation_views: HashMap<Handle, ifccad::IfccadAnnotationViewId>,
     model_window_handles: HashMap<Handle, ifccad::IfccadModelWindowId>,
@@ -804,7 +839,8 @@ impl Writer<'_> {
         if let Some(picture) = picture {
             // An unreadable saved picture is dropped, as for dimensions; the
             // entity is still written.
-            *picture = match leader_graphics::capture(self, entity.common().graphic_data.as_deref()) {
+            *picture = match leader_graphics::capture(self, entity.common().graphic_data.as_deref())
+            {
                 Ok(captured) => captured,
                 Err(error) => {
                     self.losses.note(format!(
@@ -867,7 +903,7 @@ impl Writer<'_> {
         let id = self.drawing.id_counters.allocate_block_id()?;
         self.blocks.insert(key, Some(id));
         let mut entities = Vec::new();
-        for entity in document.entities_in_block(&record.name) {
+        for entity in dimension_graphics::ordered_members(document, record)? {
             if let Some(entity) = self.entity(entity)? {
                 entities.push(entity);
             }
@@ -1173,6 +1209,10 @@ impl Writer<'_> {
             EntityType::MText(mtext) => return Ok(text::mtext_out(self, mtext)),
             EntityType::Hatch(hatch) => return Ok(hatch::hatch_out(hatch, &mut self.losses)),
             EntityType::Viewport(viewport) => return Ok(layout::viewport_out(self, viewport)),
+            EntityType::Table(value) => {
+                return table::out(self, value)
+                    .map(|value| value.map(|table| IfccadEntityKind::Table(Box::new(table))));
+            }
             EntityType::Dimension(dimension) => {
                 return Ok(dimension::dimension_out(self, dimension))
             }
@@ -1722,6 +1762,7 @@ fn kind_name(kind: &IfccadEntityKind) -> &'static str {
     match kind {
         IfccadEntityKind::Solid(_) => "Solid",
         IfccadEntityKind::Trace(_) => "Trace",
+        IfccadEntityKind::Table(_) => "Table",
         IfccadEntityKind::Dimension(_) => "Dimension",
         IfccadEntityKind::Hatch(_) => "Hatch",
         IfccadEntityKind::Text(_) => "Text",
