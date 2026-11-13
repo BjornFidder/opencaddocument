@@ -15,7 +15,7 @@ serde = ["acadrust/serde", "dep:serde"]
 ifcx = ["dep:ifccad", "dep:web-time"]
 
 [dependencies]
-acadrust = { git = "https://github.com/hakanaktt/acadrust.git", rev = "f3c996d" }
+acadrust = { git = "https://github.com/hakanaktt/acadrust.git", rev = "488f2b3" }
 rmp-serde = { version = "=1.3.0", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 # ifccad only reads and writes IFCX; the mapping to `Document` lives here.
