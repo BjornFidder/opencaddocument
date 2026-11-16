@@ -117,7 +117,8 @@ text_enum!(RecordKind(SelectionRecordKind) {
     "entity" => Entity, "layer" => Layer, "linetype" => LineType, "object" => Object,
 });
 text_enum!(Role(ContextRole) {
-    "model_space" => ModelSpace, "mline_style_dictionary" => MLineStyleDictionary,
+    "model_space" => ModelSpace, "paper_space" => PaperSpace,
+    "mline_style_dictionary" => MLineStyleDictionary,
     "by_layer" => ByLayer, "by_block" => ByBlock,
 });
 text_enum!(EvidenceCode(CaptureEvidenceCode) {
@@ -257,7 +258,7 @@ impl Projection {
     }
 }
 
-pub(super) fn read_v1(body: &[u8]) -> Result<DocumentSelection> {
+pub(super) fn read(body: &[u8]) -> Result<DocumentSelection> {
     let w: Selection =
         rmp_serde::from_slice(body).map_err(|e| error(Kind::InvalidBody, e.to_string()))?;
     Ok(DocumentSelection {
@@ -301,7 +302,7 @@ pub(super) fn read_v1(body: &[u8]) -> Result<DocumentSelection> {
     })
 }
 
-pub(super) fn write_v1(s: &DocumentSelection) -> Result<Vec<u8>> {
+pub(super) fn write(s: &DocumentSelection, version: frame::Version) -> Result<Vec<u8>> {
     let mut p = Projection {
         array_items: frame::VALUE_LIMIT,
         string_bytes: frame::BODY_LIMIT,
@@ -337,7 +338,7 @@ pub(super) fn write_v1(s: &DocumentSelection) -> Result<Vec<u8>> {
             linetype_scale: s.context.linetype_scale.to_bits(),
         },
     };
-    let mut out = frame::BoundedFrame::new();
+    let mut out = frame::BoundedFrame::new(version);
     if let Err(e) = w.serialize(&mut rmp_serde::Serializer::new(&mut out).with_struct_map()) {
         return Err(error(
             if out.exceeded {

@@ -11,15 +11,30 @@ pub(super) struct Root {
 
 pub(super) fn validate_request(
     selection: &DocumentSelection,
-    request: &ReconstructionRequest,
+    request: &Request<'_>,
     records: &BTreeMap<SelectionRecordKey, &SelectionPayload>,
 ) -> Result<(), ReconstructionError> {
     let error = |s: &str| ReconstructionError::InvalidRequest(s.into());
     let roots: BTreeSet<_> = selection.roots().iter().copied().collect();
     let mut seen = BTreeSet::new();
-    for r in &request.roots {
+    for r in request.roots {
         if !roots.contains(&r.root) || !seen.insert(r.root) {
             return Err(error("unknown, non-root or duplicate root key"));
+        }
+    }
+    let mut source_owner = None;
+    for owner in selection
+        .requirements()
+        .iter()
+        .filter(|r| r.slot == SelectionSlot::Owner && seen.contains(&r.source))
+    {
+        if owner.disposition != RequirementDisposition::Context(request.destination.role()) {
+            return Err(error(
+                "root's source space does not match the destination space",
+            ));
+        }
+        if source_owner.get_or_insert(owner.source_handle) != &owner.source_handle {
+            return Err(error("reconstruct roots from one source layout per call"));
         }
     }
     for key in request.resources.keys() {
@@ -68,7 +83,7 @@ pub(super) fn prepare_root(
                 K::InvalidOrderAnchor,
                 None,
                 Some(h),
-                "anchor is not a current ModelSpace entity",
+                "anchor is not a current entity in the target layout",
             ));
         }
     }

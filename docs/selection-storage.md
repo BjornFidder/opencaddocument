@@ -1,8 +1,8 @@
-# DocumentSelection storage V1
+# DocumentSelection storage
 
 The `selection-storage` Cargo feature enables `selection` and exposes
 `opencaddocument::selection_storage::{encode, decode}`. A selection can be
-reopened after the source drawing has been dropped. The feature uses private V1
+reopened after the source drawing has been dropped. The feature uses private
 DTOs and named MessagePack maps. Model Serde can be enabled separately.
 
 ```rust
@@ -35,7 +35,7 @@ handles, current bindings, placement and draw order belong to a later
 reconstruction request. Applications can retain the original bytes if a version
 is unsupported or an otherwise valid selection cannot be reconstructed.
 
-V1 retains the identity and geometry needed for later reconstruction. Identity
+Both versions retain the identity and geometry needed for later reconstruction. Identity
 placement preserves all captured numeric bits. A later translation can use
 the stored coordinates and source units. Target names, placement and draw
 order belong to the reconstruction request. Any insertion into an existing
@@ -46,7 +46,7 @@ SortEnts order requires a check against the current target document.
 | Offset | Size | Value |
 | --- | ---: | --- |
 | 0 | 8 | ASCII `OCADSEL` followed by byte `00` |
-| 8 | 2 | Big-endian unsigned version, `0001` |
+| 8 | 2 | Big-endian unsigned version, `0001` or `0002` |
 | 10 | 1 | Selection kind, `01` |
 | 11 | 4 | Big-endian unsigned body length |
 | 15 | Body length | Exactly one MessagePack body |
@@ -57,7 +57,10 @@ errors. A truncated header or value yields `Truncated`. A second body value or
 bytes after the frame yield `TrailingData`. Invalid markers, types, tags and
 map fields yield `InvalidBody`. Inconsistent selection content yields
 `InvalidSelection`. The error exposes its category and a byte offset or JSON
-Pointer when available.
+Pointer when available. ModelSpace-only selections use V1. The writer uses V2
+when it captures PaperSpace roots. V2 adds the `paper_space` owner role and
+supports distinct owner handles in one selection. All other wire fields are
+shared with V1.
 
 Both routes cap the body at 64 MiB, container depth at 16, each array or map
 at 262,144 elements or entries, the total number of values at 1,048,576
@@ -133,7 +136,7 @@ applies no geometric normalization or inferred counts.
 | Disposition | `["included", key]`, `["external", key]`, `["missing"]`, `["context", role]` |
 
 Context role strings are `model_space`, `mline_style_dictionary`,
-`by_layer` and `by_block`. Evidence code strings are `missing_dependency`,
+`by_layer` and `by_block`, plus `paper_space` in V2. Evidence code strings are `missing_dependency`,
 `excluded_raw_record`, `excluded_graphics`, `excluded_derived_data`,
 `resolved_source_default` and `unknown_units`. Preserve the message verbatim.
 
@@ -155,8 +158,12 @@ Decode constructs those explicit values. Encode checks them before projection.
   slot. A layer has one linetype slot. An MLINESTYLE has a registration slot and
   a linetype slot for every element. Linetypes have no requirements. Each
   source/slot pair is unique. Incoming slots sharing an endpoint remain separate.
-- Every root owner is the same source ModelSpace handle with a ModelSpace
-  context. Each nonzero style owner is the same source style dictionary.
+- Every root has a ModelSpace or PaperSpace context matching its payload's
+  owner handle. ModelSpace owners share one handle and the `*Model_Space` name.
+  In V2, each PaperSpace owner has a `*Paper_Space` block name with an optional
+  decimal suffix and explicit owner mode (0). Each layout name and handle
+  identify each other uniquely within the selection. Layout block names are
+  compared case-insensitively. Each nonzero style owner is the same source style dictionary.
   Registration carries the style name and owner, with a dictionary context or
   a known gap. Context owner identities are separate from payload identities.
 - Resource requirements preserve source name and handle from the corresponding
@@ -171,6 +178,7 @@ Decode constructs those explicit values. Encode checks them before projection.
   (ASCII-case insensitive) denotes ByLayer, and ByBlock denotes ByBlock.
   These roles can be missing only for a dangling nonzero source handle.
   A missing nonzero endpoint cannot name a known included or external identity.
+  V2 also rejects missing endpoints matching known contextual owners.
   Reopen preserves a gap even if another record has a matching name.
 - Missing and default evidence each identify the corresponding source/slot
   exactly once. Exclusion evidence locates an entity with a nil slot, once per
@@ -180,5 +188,5 @@ Decode constructs those explicit values. Encode checks them before projection.
 Changing fields, tags, absence rules or wire semantics requires a separate
 version decision. The envelope selects the reader before it interprets the
 payload. Re-encoding a valid alternative marker or map order yields the writer's
-V1 representation. Independent fixtures and their source generator live under
+canonical representation. Independent V1 fixtures and their source generator live under
 `tests/fixtures/selection/v1/`.

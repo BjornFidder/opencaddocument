@@ -22,6 +22,52 @@ pub struct ReconstructionRequest {
     pub external: Vec<ExternalBinding>,
 }
 
+/// Reconstruct roots from one source paper layout into an existing paper layout.
+#[derive(Debug, Clone)]
+pub struct PaperSpaceReconstructionRequest {
+    /// The Layout object handle in the target document.
+    pub layout: Handle,
+    pub coordinates: CoordinatePolicy,
+    pub roots: Vec<RootReconstruction>,
+    pub resources: BTreeMap<SelectionRecordKey, ResourceAction>,
+    pub external: Vec<ExternalBinding>,
+}
+
+#[derive(Clone, Copy)]
+enum Destination {
+    ModelSpace(Handle),
+    PaperSpace(Handle),
+}
+
+impl Destination {
+    fn role(self) -> ContextRole {
+        match self {
+            Self::ModelSpace(_) => ContextRole::ModelSpace,
+            Self::PaperSpace(_) => ContextRole::PaperSpace,
+        }
+    }
+}
+
+struct Request<'a> {
+    destination: Destination,
+    coordinates: CoordinatePolicy,
+    roots: &'a [RootReconstruction],
+    resources: &'a BTreeMap<SelectionRecordKey, ResourceAction>,
+    external: &'a [ExternalBinding],
+}
+
+impl<'a> From<&'a ReconstructionRequest> for Request<'a> {
+    fn from(request: &'a ReconstructionRequest) -> Self {
+        Self {
+            destination: Destination::ModelSpace(request.model_space),
+            coordinates: request.coordinates,
+            roots: &request.roots,
+            resources: &request.resources,
+            external: &request.external,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoordinatePolicy {
     MatchingUnits,
@@ -180,13 +226,33 @@ pub(super) fn run(
     target: &Document,
     request: &ReconstructionRequest,
 ) -> Result<ReconstructionOutcome, ReconstructionError> {
-    run_with_order(selection, target, request, order::Order::apply)
+    run_with_order(
+        selection,
+        target,
+        &Request::from(request),
+        order::Order::apply,
+    )
+}
+
+pub(super) fn run_paperspace(
+    selection: &DocumentSelection,
+    target: &Document,
+    request: &PaperSpaceReconstructionRequest,
+) -> Result<ReconstructionOutcome, ReconstructionError> {
+    let request = Request {
+        destination: Destination::PaperSpace(request.layout),
+        coordinates: request.coordinates,
+        roots: &request.roots,
+        resources: &request.resources,
+        external: &request.external,
+    };
+    run_with_order(selection, target, &request, order::Order::apply)
 }
 
 fn run_with_order(
     selection: &DocumentSelection,
     target: &Document,
-    request: &ReconstructionRequest,
+    request: &Request<'_>,
     apply_order: impl FnOnce(
         order::Order,
         &mut Document,
@@ -208,7 +274,8 @@ fn run_with_order(
         });
     }
     let index = SourceIndex::new(target);
-    let order = order::Order::read(target, request.model_space, &index)?;
+    let order = order::Order::read(target, request.destination, &index)?;
+    let owner = order.owner();
     let mut catalog = resources::Catalog::new(selection, target, &index, request, records);
     let mut roots: Vec<_> = request
         .roots
@@ -330,7 +397,7 @@ fn run_with_order(
                     .ok_or_else(|| construction("missing layer handle"))?;
                 let common = entity.common_mut();
                 common.handle = h;
-                common.owner_handle = request.model_space;
+                common.owner_handle = owner;
                 layer.name(&used).clone_into(&mut common.layer);
                 common.layer_handle = Some(layer_handle);
                 common.linetype_handle = Some(
@@ -352,7 +419,7 @@ fn run_with_order(
                 if added != h
                     || candidate
                         .get_entity(h)
-                        .is_none_or(|e| e.common().owner_handle != request.model_space)
+                        .is_none_or(|e| e.common().owner_handle != owner)
                 {
                     return Err(construction(
                         "entity did not land at its reserved identity and owner",
@@ -375,8 +442,9 @@ fn run_with_order(
     if applied != 0 {
         let block = candidate
             .block_records
-            .get("*Model_Space")
-            .ok_or_else(|| construction("missing ModelSpace after insertion"))?;
+            .iter()
+            .find(|block| block.handle == owner)
+            .ok_or_else(|| construction("missing layout block after insertion"))?;
         if !block
             .entity_handles
             .iter()
@@ -386,7 +454,7 @@ fn run_with_order(
             .eq(placements.iter().rev().map(|(_, handle)| *handle))
         {
             return Err(construction(
-                "ModelSpace membership differs from planned insertions",
+                "layout membership differs from planned insertions",
             ));
         }
     }
@@ -470,7 +538,7 @@ mod tests {
         let result = run_with_order(
             &selection,
             &target,
-            &request,
+            &Request::from(&request),
             |order, candidate, handles, placements| {
                 assert!(candidate.next_handle() > floor);
                 assert!(candidate.header.handle_seed > seed);
@@ -490,7 +558,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(ReconstructionError::Construction(message))
-                if message == "missing ModelSpace extension dictionary"
+                if message == "missing layout extension dictionary"
         ));
         assert_eq!(target, original_target);
         assert_eq!(target.next_handle(), floor);
@@ -583,13 +651,14 @@ mod tests {
         };
 
         let index = SourceIndex::new(&target);
-        let order = order::Order::read(&target, request.model_space, &index).unwrap();
+        let view = Request::from(&request);
+        let order = order::Order::read(&target, view.destination, &index).unwrap();
         let records = selection
             .records()
             .iter()
             .map(|r| (r.key, &r.payload))
             .collect();
-        let mut catalog = resources::Catalog::new(&selection, &target, &index, &request, records);
+        let mut catalog = resources::Catalog::new(&selection, &target, &index, &view, records);
         let prepare = |catalog: &mut resources::Catalog<'_>, i: usize| {
             plan::prepare_root(&selection, catalog, &order, &request.roots[i])
         };

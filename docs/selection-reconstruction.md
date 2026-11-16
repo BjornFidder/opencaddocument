@@ -1,7 +1,7 @@
 # Reconstructing an owned selection
 
 `DocumentSelection::reconstruct_available` adds explicitly requested
-Line and MLINE roots to a candidate cloned from the current Document.
+ModelSpace Line and MLINE roots to a candidate cloned from the current Document.
 Enable the `selection` Cargo feature to use this API.
 Capture or reopen the selection before calling it. Reopening uses the
 optional `selection-storage` feature.
@@ -84,9 +84,22 @@ An independently valid existing-resource binding can still be used. The
 numeric allocator separately checks global handle coverage and protects
 dangling numeric endpoints.
 
+## Paper layouts
+
+Use `DocumentSelection::reconstruct_paperspace` with
+`PaperSpaceReconstructionRequest`. Pass the destination `Layout` object handle
+in `layout`. The layout must already exist and its block link and membership
+must be consistent. Each call binds roots from one source paper layout to the
+chosen destination. A selection can contain roots from any number of source
+layouts. For each layout, pass its roots and use the preceding candidate as
+the next target. Owner requirements identify the source groups. Resource
+bindings can reuse a style or layer created by an earlier call. Mixed source
+layouts in one request are invalid. A draw-order anchor from another layout
+blocks that root.
+
 ## Geometry and draw order
 
-The first reconstruction scope is ModelSpace. `Identity` retains captured
+`Identity` retains captured
 geometry bits. `Translate` changes points while retaining directions, normals,
 miter vectors and segment parameters. The source and target must have equal
 positive finite global linetype scales. `MatchingUnits` requires equal known
@@ -95,10 +108,11 @@ units. Invalid geometry, unsupported references and stale anchors produce
 located root blockers.
 
 Append uses the natural order when the target stores agree. Insertion before
-a live ModelSpace entity uses the current effective order. Rebuilding the
+a live entity in the destination layout uses its current effective order. Rebuilding the
 typed SortEnts order covers existing fallback ranks as well as new entities
 so that DXF rank renumbering retains the relative order. DWG and DXF readback
-tests exercise a populated target and sparse existing SortEnts. The allocator
+tests exercise a populated ModelSpace target with sparse existing SortEnts and
+ordered inserts into two paper layouts. The allocator
 refuses a target containing unqualified raw DXF sort codes. That error leaves
 the original data intact.
 

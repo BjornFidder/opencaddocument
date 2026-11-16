@@ -1,6 +1,6 @@
 #![doc = include_str!("../../../docs/selection-storage.md")]
 
-use super::DocumentSelection;
+use super::{ContextRole, DocumentSelection, RequirementDisposition};
 
 mod frame;
 mod validate;
@@ -26,7 +26,7 @@ pub struct SelectionStorageError {
     pub kind: SelectionStorageErrorKind,
     /// Byte offset from the beginning of the envelope, when available.
     pub offset: Option<usize>,
-    /// JSON Pointer into the V1 body, when available.
+    /// JSON Pointer into the body, when available.
     pub path: Option<String>,
     pub message: String,
 }
@@ -57,15 +57,25 @@ fn error(kind: SelectionStorageErrorKind, message: impl Into<String>) -> Selecti
     }
 }
 
-/// Write one versioned V1 selection.
+/// Write one versioned selection, using V2 when it contains PaperSpace roots.
 pub fn encode(selection: &DocumentSelection) -> Result<Vec<u8>> {
-    validate::selection(selection)?;
-    wire::write_v1(selection)
+    let version = if selection
+        .requirements()
+        .iter()
+        .any(|r| r.disposition == RequirementDisposition::Context(ContextRole::PaperSpace))
+    {
+        frame::Version::V2
+    } else {
+        frame::Version::V1
+    };
+    validate::selection(selection, version)?;
+    wire::write(selection, version)
 }
 
 /// Read one versioned selection into owned model values.
 pub fn decode(bytes: &[u8]) -> Result<DocumentSelection> {
-    let selection = wire::read_v1(frame::body(bytes)?)?;
-    validate::selection(&selection)?;
+    let (version, body) = frame::body(bytes)?;
+    let selection = wire::read(body)?;
+    validate::selection(&selection, version)?;
     Ok(selection)
 }

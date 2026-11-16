@@ -11,6 +11,13 @@ const DEPTH_LIMIT: usize = 16;
 
 type Result<T> = std::result::Result<T, SelectionStorageError>;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u16)]
+pub(super) enum Version {
+    V1 = 1,
+    V2 = 2,
+}
+
 fn error(kind: Kind, offset: usize, message: &str) -> SelectionStorageError {
     SelectionStorageError {
         kind,
@@ -20,7 +27,7 @@ fn error(kind: Kind, offset: usize, message: &str) -> SelectionStorageError {
     }
 }
 
-pub(super) fn body(bytes: &[u8]) -> Result<&[u8]> {
+pub(super) fn body(bytes: &[u8]) -> Result<(Version, &[u8])> {
     if bytes.len() < HEADER {
         return Err(error(
             Kind::Truncated,
@@ -31,13 +38,17 @@ pub(super) fn body(bytes: &[u8]) -> Result<&[u8]> {
     if &bytes[..8] != MAGIC {
         return Err(error(Kind::InvalidEnvelope, 0, "wrong selection magic"));
     }
-    if bytes[8..10] != [0, 1] {
-        return Err(error(
-            Kind::UnsupportedVersion,
-            8,
-            "unsupported selection version",
-        ));
-    }
+    let version = match bytes[8..10] {
+        [0, 1] => Version::V1,
+        [0, 2] => Version::V2,
+        _ => {
+            return Err(error(
+                Kind::UnsupportedVersion,
+                8,
+                "unsupported selection version",
+            ))
+        }
+    };
     if bytes[10] != 1 {
         return Err(error(
             Kind::UnsupportedKind,
@@ -70,7 +81,7 @@ pub(super) fn body(bytes: &[u8]) -> Result<&[u8]> {
     }
     let body = &bytes[HEADER..];
     preflight(body)?;
-    Ok(body)
+    Ok((version, body))
 }
 
 fn preflight(body: &[u8]) -> Result<()> {
@@ -199,9 +210,10 @@ pub(super) struct BoundedFrame {
 }
 
 impl BoundedFrame {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(version: Version) -> Self {
         let mut bytes = Vec::from(*MAGIC);
-        bytes.extend_from_slice(&[0, 1, 1, 0, 0, 0, 0]);
+        bytes.extend_from_slice(&(version as u16).to_be_bytes());
+        bytes.extend_from_slice(&[1, 0, 0, 0, 0]);
         Self {
             bytes,
             exceeded: false,

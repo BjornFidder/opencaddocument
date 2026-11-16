@@ -96,6 +96,34 @@ fn roots_are_explicit_unique_modelspace_drawables() {
 }
 
 #[test]
+fn captures_line_and_mline_from_distinct_paper_layouts() {
+    let mut doc = Document::new();
+    let owners = ["Sheet A", "Sheet B"].map(|name| {
+        let layout = doc.add_layout(name).unwrap();
+        let ObjectType::Layout(layout) = &doc.objects[&layout] else {
+            panic!("missing created layout");
+        };
+        layout.block_record
+    });
+    let mut line = Line::from_points(Vector3::ZERO, Vector3::new(1.0, 0.0, 0.0));
+    line.common.owner_handle = owners[0];
+    let mut mline = MLine::new();
+    mline.common.owner_handle = owners[1];
+    let a = doc.add_entity(EntityType::Line(line)).unwrap();
+    let b = doc.add_entity(EntityType::MLine(mline)).unwrap();
+    let selection = capture(&doc, vec![a, b]);
+    assert_eq!(
+        selection
+            .requirements()
+            .iter()
+            .filter(|r| r.slot == SelectionSlot::Owner)
+            .map(|r| (r.source.handle, r.source_handle.unwrap()))
+            .collect::<Vec<_>>(),
+        [(a, owners[0]), (b, owners[1])]
+    );
+}
+
+#[test]
 fn source_identity_collisions_are_rejected() {
     let mut doc = Document::new();
     let h = line(&mut doc);
