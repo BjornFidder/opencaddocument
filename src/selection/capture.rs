@@ -423,8 +423,8 @@ impl Capture<'_> {
             ));
         }
         let (role, name) = self.owner(k, *owner_handle, *entity_mode)?;
-        if role == ContextRole::PaperSpace {
-            // The layout owns the root explicitly in a portable selection.
+        if role != ContextRole::ModelSpace {
+            // Persist explicit ownership for paper and definition members.
             *entity_mode = Some(0);
         }
         self.requirement(
@@ -482,7 +482,7 @@ impl Capture<'_> {
         let fail = |kind, message| error(kind, Some(root), Some(SelectionSlot::Owner), message);
         let unsupported = |message| fail(SelectionErrorKind::UnsupportedContent, message);
         let Some(block) = self.doc.block_records.iter().find(|b| b.handle == owner) else {
-            return Err(unsupported("root has no layout block owner"));
+            return Err(unsupported("root has no block record owner"));
         };
         self.index.unique(
             key(SelectionRecordKind::Object, owner),
@@ -508,9 +508,11 @@ impl Capture<'_> {
             .is_some_and(|paper| paper.handle == owner)
         {
             ContextRole::PaperSpace
+        } else if super::block_definition::is_local(self.doc, block) {
+            ContextRole::BlockDefinition
         } else {
             return Err(unsupported(
-                "root owner is not an unambiguous drawing layout",
+                "root owner is not an unambiguous drawing layout or local block definition",
             ));
         };
         if !matches!(
@@ -519,15 +521,17 @@ impl Capture<'_> {
                 | (ContextRole::ModelSpace, Some(2))
                 | (ContextRole::PaperSpace, Some(1))
         ) {
-            return Err(unsupported("entity mode disagrees with its layout owner"));
+            return Err(unsupported(
+                "entity mode disagrees with its block record owner",
+            ));
         }
         let members = self.index.memberships.get(&root.handle);
         if members.is_some_and(|owners| owners.as_slice() != [owner])
-            || (role == ContextRole::PaperSpace && members.is_none())
+            || (role != ContextRole::ModelSpace && members.is_none())
         {
             return Err(fail(
                 SelectionErrorKind::ReferenceConflict,
-                "source block membership contradicts the root's layout owner",
+                "source block membership contradicts the root's owner",
             ));
         }
         Ok((role, block.name.clone()))

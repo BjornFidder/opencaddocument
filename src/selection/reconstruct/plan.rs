@@ -34,7 +34,7 @@ pub(super) fn validate_request(
             ));
         }
         if source_owner.get_or_insert(owner.source_handle) != &owner.source_handle {
-            return Err(error("reconstruct roots from one source layout per call"));
+            return Err(error("reconstruct roots from one source owner per call"));
         }
     }
     for key in request.resources.keys() {
@@ -83,7 +83,7 @@ pub(super) fn prepare_root(
                 K::InvalidOrderAnchor,
                 None,
                 Some(h),
-                "anchor is not a current entity in the target layout",
+                "anchor is not a current entity in the target owner block",
             ));
         }
     }

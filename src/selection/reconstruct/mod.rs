@@ -33,10 +33,22 @@ pub struct PaperSpaceReconstructionRequest {
     pub external: Vec<ExternalBinding>,
 }
 
+/// Reconstruct roots from one local block into an existing local block definition.
+#[derive(Debug, Clone)]
+pub struct BlockDefinitionReconstructionRequest {
+    /// The block record handle in the target document.
+    pub block_record: Handle,
+    pub coordinates: CoordinatePolicy,
+    pub roots: Vec<RootReconstruction>,
+    pub resources: BTreeMap<SelectionRecordKey, ResourceAction>,
+    pub external: Vec<ExternalBinding>,
+}
+
 #[derive(Clone, Copy)]
 enum Destination {
     ModelSpace(Handle),
     PaperSpace(Handle),
+    BlockDefinition(Handle),
 }
 
 impl Destination {
@@ -44,6 +56,7 @@ impl Destination {
         match self {
             Self::ModelSpace(_) => ContextRole::ModelSpace,
             Self::PaperSpace(_) => ContextRole::PaperSpace,
+            Self::BlockDefinition(_) => ContextRole::BlockDefinition,
         }
     }
 }
@@ -249,6 +262,21 @@ pub(super) fn run_paperspace(
     run_with_order(selection, target, &request, order::Order::apply)
 }
 
+pub(super) fn run_in_block_definition(
+    selection: &DocumentSelection,
+    target: &Document,
+    request: &BlockDefinitionReconstructionRequest,
+) -> Result<ReconstructionOutcome, ReconstructionError> {
+    let request = Request {
+        destination: Destination::BlockDefinition(request.block_record),
+        coordinates: request.coordinates,
+        roots: &request.roots,
+        resources: &request.resources,
+        external: &request.external,
+    };
+    run_with_order(selection, target, &request, order::Order::apply)
+}
+
 fn run_with_order(
     selection: &DocumentSelection,
     target: &Document,
@@ -444,7 +472,7 @@ fn run_with_order(
             .block_records
             .iter()
             .find(|block| block.handle == owner)
-            .ok_or_else(|| construction("missing layout block after insertion"))?;
+            .ok_or_else(|| construction("missing owner block record after insertion"))?;
         if !block
             .entity_handles
             .iter()
@@ -454,7 +482,7 @@ fn run_with_order(
             .eq(placements.iter().rev().map(|(_, handle)| *handle))
         {
             return Err(construction(
-                "layout membership differs from planned insertions",
+                "block membership differs from planned insertions",
             ));
         }
     }
@@ -558,7 +586,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(ReconstructionError::Construction(message))
-                if message == "missing layout extension dictionary"
+                if message == "missing owner block extension dictionary"
         ));
         assert_eq!(target, original_target);
         assert_eq!(target.next_handle(), floor);

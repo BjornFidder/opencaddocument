@@ -29,7 +29,7 @@ fn replace(body: &[u8], before: &[u8], after: &[u8]) -> Vec<u8> {
 fn rejects_wrong_magic_version_kind_before_body() {
     for (index, value, kind) in [
         (0, 0, Kind::InvalidEnvelope),
-        (9, 3, Kind::UnsupportedVersion),
+        (9, 4, Kind::UnsupportedVersion),
         (10, 2, Kind::UnsupportedKind),
     ] {
         let mut data = frame(&[0xc1]);
@@ -332,15 +332,13 @@ fn rejects_cross_kind_identity_collision_and_conflicting_owners() {
     let owner = replace(body, b"\xacowner_handle\x05", b"\xacowner_handle\x07");
     let err = decode(&frame(&owner)).unwrap_err();
     assert_eq!(err.kind, Kind::InvalidSelection);
-    assert!(err
-        .message
-        .contains("inconsistent layout owner requirement"));
+    assert!(err.message.contains("inconsistent block owner requirement"));
     let owner = replace(&owner, b"\xadsource_handle\x05", b"\xadsource_handle\x07");
     let err = decode(&frame(&owner)).unwrap_err();
     assert_eq!(err.kind, Kind::InvalidSelection);
     assert!(err
         .message
-        .contains("conflicting contextual layout identity"));
+        .contains("conflicting contextual owner identity"));
 }
 
 #[test]

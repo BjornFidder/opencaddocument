@@ -1,6 +1,6 @@
 #![doc = include_str!("../../../docs/selection-storage.md")]
 
-use super::{ContextRole, DocumentSelection, RequirementDisposition};
+use super::{DocumentSelection, RequirementDisposition};
 
 mod frame;
 mod validate;
@@ -57,17 +57,17 @@ fn error(kind: SelectionStorageErrorKind, message: impl Into<String>) -> Selecti
     }
 }
 
-/// Write one versioned selection, using V2 when it contains PaperSpace roots.
+/// Write one selection using the earliest storage version that can represent its owners.
 pub fn encode(selection: &DocumentSelection) -> Result<Vec<u8>> {
-    let version = if selection
+    let version = selection
         .requirements()
         .iter()
-        .any(|r| r.disposition == RequirementDisposition::Context(ContextRole::PaperSpace))
-    {
-        frame::Version::V2
-    } else {
-        frame::Version::V1
-    };
+        .filter_map(|r| match r.disposition {
+            RequirementDisposition::Context(role) => Some(frame::Version::for_role(role)),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(frame::Version::V1);
     validate::selection(selection, version)?;
     wire::write(selection, version)
 }

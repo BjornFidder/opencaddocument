@@ -2,9 +2,11 @@
 
 use std::collections::BTreeMap;
 
+use opencaddocument::entities::Insert;
 use opencaddocument::objects::{ObjectType, SortEntitiesTable};
 use opencaddocument::selection::*;
-use opencaddocument::selection_storage::{decode, encode};
+use opencaddocument::selection_storage::{decode, encode, SelectionStorageErrorKind};
+use opencaddocument::tables::BlockRecord;
 use opencaddocument::{Document, Dwg, Dxf, EntityType, Format, Handle, Line, Vector3};
 
 fn line(doc: &mut Document, x: f64) -> Handle {
@@ -16,10 +18,10 @@ fn line(doc: &mut Document, x: f64) -> Handle {
 }
 
 fn draw_order(doc: &Document) -> Vec<i32> {
-    layout_draw_order(doc, doc.header.model_space_block_handle)
+    draw_order_in_block(doc, doc.header.model_space_block_handle)
 }
 
-fn layout_draw_order(doc: &Document, owner: Handle) -> Vec<i32> {
+fn draw_order_in_block(doc: &Document, owner: Handle) -> Vec<i32> {
     let block = doc
         .block_records
         .iter()
@@ -231,7 +233,7 @@ fn paper_selection_roundtrips(format: &dyn Format) {
     ] {
         let owner = layout(&read, sheet).1;
         assert_eq!(
-            layout_draw_order(&read, owner),
+            draw_order_in_block(&read, owner),
             order,
             "{} {sheet}",
             format.name()
@@ -257,6 +259,330 @@ fn paper_selection_roundtrips_dwg() {
 #[test]
 fn paper_selection_roundtrips_dxf() {
     paper_selection_roundtrips(&Dxf);
+}
+
+fn add_definition(doc: &mut Document, name: &str) -> Handle {
+    let mut record = BlockRecord::new(name);
+    record.handle = doc.allocate_handle();
+    record.block_entity_handle = doc.allocate_handle();
+    record.block_end_handle = doc.allocate_handle();
+    let handle = record.handle;
+    doc.block_records.add(record).unwrap();
+    handle
+}
+
+fn add_nested_definitions(doc: &mut Document) -> [Handle; 2] {
+    add_definition(doc, "Inner");
+    add_definition(doc, "Outer");
+    add_member(
+        doc,
+        EntityType::Insert(Insert::new("Inner", Vector3::new(4.0, 5.0, 0.0))),
+        "Outer",
+    );
+    [50.0, 60.0].map(|x| {
+        doc.add_entity(EntityType::Insert(Insert::new(
+            "Outer",
+            Vector3::new(x, 10.0, 0.0),
+        )))
+        .unwrap()
+    })
+}
+
+fn add_member(doc: &mut Document, mut entity: EntityType, definition: &str) -> Handle {
+    entity.common_mut().owner_handle = doc.block_records.get(definition).unwrap().handle;
+    doc.add_entity(entity).unwrap()
+}
+
+fn nested_roots(doc: &mut Document) -> [Handle; 2] {
+    let mut line = Line::from_points(Vector3::new(90.0, 0.0, 0.0), Vector3::new(90.0, 2.0, 0.0));
+    line.common.linetype = "ByBlock".into();
+    let mut mline = opencaddocument::entities::MLine::from_points(&[
+        Vector3::new(91.0, 0.0, 0.0),
+        Vector3::new(91.0, 2.0, 0.0),
+    ]);
+    mline.vertices[0].segments[0].parameters = vec![2.5];
+    [EntityType::Line(line), EntityType::MLine(mline)]
+        .map(|entity| add_member(doc, entity, "Inner"))
+}
+
+#[test]
+fn captures_nested_block_members_by_their_direct_owner() {
+    let mut source = Document::new();
+    add_nested_definitions(&mut source);
+    let roots = nested_roots(&mut source);
+    let selection =
+        DocumentSelection::capture(&source, &CaptureRequest::new("nested", roots.into()))
+            .unwrap()
+            .selection;
+    let expected = source.block_records.get("Inner").unwrap().handle;
+    let owners: Vec<_> = selection
+        .requirements()
+        .iter()
+        .filter(|r| r.slot == SelectionSlot::Owner)
+        .map(|r| (r.source_handle, r.source_name.as_deref(), &r.disposition))
+        .collect();
+    let disposition = RequirementDisposition::Context(ContextRole::BlockDefinition);
+    assert_eq!(owners, [(Some(expected), Some("Inner"), &disposition); 2]);
+}
+
+#[test]
+fn rejects_external_or_inconsistent_block_owners() {
+    let mut doc = Document::new();
+    add_nested_definitions(&mut doc);
+    let [line, _] = nested_roots(&mut doc);
+    let request = CaptureRequest::new("invalid owner", vec![line]);
+    doc.block_records
+        .get_mut("Inner")
+        .unwrap()
+        .flags
+        .is_external = true;
+    let err = DocumentSelection::capture(&doc, &request).unwrap_err();
+    assert_eq!(err.kind, SelectionErrorKind::UnsupportedContent);
+    assert_eq!(err.slot, Some(SelectionSlot::Owner));
+
+    doc.block_records
+        .get_mut("Inner")
+        .unwrap()
+        .flags
+        .is_external = false;
+    doc.get_entity_mut(line).unwrap().common_mut().owner_handle =
+        doc.block_records.get("Outer").unwrap().handle;
+    let err = DocumentSelection::capture(&doc, &request).unwrap_err();
+    assert_eq!(err.kind, SelectionErrorKind::ReferenceConflict);
+    assert_eq!(err.slot, Some(SelectionSlot::Owner));
+}
+
+fn nested_selection_roundtrips(format: &dyn Format) {
+    let mut target = Document::new();
+    add_definition(&mut target, "Unrelated");
+    let [moving, stationary] = add_nested_definitions(&mut target);
+    let Some(EntityType::Insert(insert)) = target.get_entity_mut(stationary) else {
+        panic!("expected the stationary INSERT");
+    };
+    let stationary_rotation = std::f64::consts::FRAC_PI_6;
+    insert.rotation = stationary_rotation;
+    insert.set_x_scale(1.5);
+
+    let bytes = {
+        let mut source = Document::new();
+        add_nested_definitions(&mut source);
+        let [line, mline] = nested_roots(&mut source);
+        let outer_line = add_member(
+            &mut source,
+            EntityType::Line(Line::from_points(
+                Vector3::ZERO,
+                Vector3::new(1.0, 0.0, 0.0),
+            )),
+            "Outer",
+        );
+        let (cad, losses) = format.write(&source).unwrap();
+        assert!(losses.is_empty(), "{losses:?}");
+        let (source, losses) = format.read(&cad).unwrap();
+        assert!(losses.is_empty(), "{losses:?}");
+        let mut request = CaptureRequest::new("nested source", vec![line, mline, outer_line]);
+        request.external.insert(SelectionRecordKey {
+            kind: SelectionRecordKind::Layer,
+            handle: source.layers.get("0").unwrap().handle,
+        });
+        let selection = DocumentSelection::capture(&source, &request)
+            .unwrap()
+            .selection;
+        let bytes = encode(&selection).unwrap();
+        assert_eq!(&bytes[8..10], &[0, 3]);
+        assert_eq!(decode(&bytes).unwrap(), selection);
+        for old_version in [1, 2] {
+            let mut backdated = bytes.clone();
+            backdated[9] = old_version;
+            let err = decode(&backdated).unwrap_err();
+            assert_eq!(err.kind, SelectionStorageErrorKind::InvalidSelection);
+            assert!(err.message.contains("later storage version"));
+        }
+        bytes
+    };
+    let selection = decode(&bytes).unwrap();
+    let Some(EntityType::Insert(insert)) = target.get_entity_mut(moving) else {
+        panic!("expected the moving INSERT");
+    };
+    let moved_point = Vector3::new(35.0, -15.0, 4.0);
+    let moved_rotation = std::f64::consts::FRAC_PI_3;
+    insert.insert_point = moved_point;
+    insert.rotation = moved_rotation;
+    let inner = target.block_records.get("Inner").unwrap().handle;
+    let source_owner = selection
+        .requirements()
+        .iter()
+        .find(|r| r.slot == SelectionSlot::Owner)
+        .unwrap()
+        .source_handle;
+    assert_ne!(source_owner, Some(inner));
+    let outer = target.block_records.get("Outer").unwrap();
+    let outer_insert = outer.entity_handles[0];
+    let anchor = add_member(
+        &mut target,
+        EntityType::Line(Line::from_points(
+            Vector3::new(10.0, 0.0, 0.0),
+            Vector3::new(10.0, 1.0, 0.0),
+        )),
+        "Inner",
+    );
+    let layer = target.layers.get("0").unwrap().handle;
+    let style = selection
+        .records()
+        .iter()
+        .find(|r| matches!(r.payload, SelectionPayload::MLineStyle(_)))
+        .unwrap()
+        .key;
+    let target_style = target.header.current_multiline_style_handle;
+    let placements = |roots: &[SelectionRecordKey], anchor| {
+        roots
+            .iter()
+            .map(|&root| RootReconstruction {
+                root,
+                transform: SelectionPlacement::Identity,
+                order: SelectionDrawOrder::Before(anchor),
+                layer: Some(layer),
+                linetype: None,
+                appearance: RootAppearanceOverrides::default(),
+            })
+            .collect()
+    };
+    let mut request = BlockDefinitionReconstructionRequest {
+        block_record: target.header.model_space_block_handle,
+        coordinates: CoordinatePolicy::DrawingCoordinates,
+        roots: placements(&selection.roots()[..2], anchor),
+        resources: BTreeMap::from([(style, ResourceAction::Reuse(target_style))]),
+        external: vec![],
+    };
+    assert!(matches!(
+        selection.reconstruct_in_block_definition(&target, &request),
+        Err(ReconstructionError::UnsafeTarget(_))
+    ));
+    request.block_record = inner;
+    request.roots = placements(selection.roots(), anchor);
+    assert!(matches!(
+        selection.reconstruct_in_block_definition(&target, &request),
+        Err(ReconstructionError::InvalidRequest(_))
+    ));
+    request.roots = placements(&selection.roots()[..2], outer_insert);
+    let blocked = selection
+        .reconstruct_in_block_definition(&target, &request)
+        .unwrap();
+    assert!(blocked.roots.iter().all(|r| matches!(&r.status, RootReconstructionStatus::Blocked { reasons } if reasons[0].kind == ReconstructionBlockerKind::InvalidOrderAnchor)));
+    assert_eq!(blocked.document, target);
+    assert_eq!(blocked.document.next_handle(), target.next_handle());
+
+    request.roots = placements(&selection.roots()[..2], anchor);
+    let outcome = selection
+        .reconstruct_in_block_definition(&target, &request)
+        .unwrap();
+    assert!(
+        outcome
+            .roots
+            .iter()
+            .all(|r| matches!(r.status, RootReconstructionStatus::Applied { .. })),
+        "{:?}",
+        outcome.roots
+    );
+    assert_eq!(outcome.resources[&style], target_style);
+    for insert in target
+        .entities()
+        .filter(|e| matches!(e, EntityType::Insert(_)))
+    {
+        assert_eq!(
+            outcome.document.get_entity(insert.common().handle),
+            Some(insert)
+        );
+    }
+
+    let (cad, losses) = format.write(&outcome.document).unwrap();
+    assert!(losses.is_empty(), "{losses:?}");
+    let (read, losses) = format.read(&cad).unwrap();
+    assert!(losses.is_empty(), "{losses:?}");
+    let inner = read.block_records.get("Inner").unwrap();
+    let outer = read.block_records.get("Outer").unwrap();
+    assert_eq!(draw_order_in_block(&read, inner.handle), [90, 91, 10]);
+    let line = inner
+        .entity_handles
+        .iter()
+        .find_map(|&h| match read.get_entity(h) {
+            Some(EntityType::Line(line)) if line.start.x == 90.0 => Some(line),
+            _ => None,
+        })
+        .unwrap();
+    assert!(line.common.linetype.eq_ignore_ascii_case("ByBlock"));
+    assert_eq!(line.end, Vector3::new(90.0, 2.0, 0.0));
+    let mline = inner
+        .entity_handles
+        .iter()
+        .find_map(|&h| match read.get_entity(h) {
+            Some(EntityType::MLine(mline)) => Some(mline),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        mline.style_handle,
+        Some(read.header.current_multiline_style_handle)
+    );
+    assert_eq!(mline.vertices[0].segments[0].parameters, [2.5]);
+
+    let [nested] = outer.entity_handles.as_slice() else {
+        panic!("expected one outer block member");
+    };
+    let Some(EntityType::Insert(nested)) = read.get_entity(*nested) else {
+        panic!("expected the nested INSERT");
+    };
+    assert_eq!(nested.common.owner_handle, outer.handle);
+    assert_eq!(nested.block_name, "Inner");
+    assert_eq!(nested.insert_point, Vector3::new(4.0, 5.0, 0.0));
+    let mut model_inserts: Vec<_> = read
+        .entities()
+        .filter_map(|e| match e {
+            EntityType::Insert(insert)
+                if insert.common.owner_handle == read.header.model_space_block_handle =>
+            {
+                Some(insert)
+            }
+            _ => None,
+        })
+        .collect();
+    model_inserts.sort_by(|a, b| a.insert_point.x.total_cmp(&b.insert_point.x));
+    let [moved, stationary] = model_inserts.as_slice() else {
+        panic!("expected two ModelSpace INSERTs");
+    };
+    for (insert, point, rotation, x_scale) in [
+        (moved, moved_point, moved_rotation, 1.0),
+        (
+            stationary,
+            Vector3::new(60.0, 10.0, 0.0),
+            stationary_rotation,
+            1.5,
+        ),
+    ] {
+        assert_eq!(insert.block_name, "Outer");
+        assert_eq!(insert.insert_point, point);
+        assert!(
+            (insert.rotation - rotation).abs() < 1e-12,
+            "{} INSERT at {point:?}: rotation {} != {rotation}",
+            format.name(),
+            insert.rotation
+        );
+        assert_eq!(
+            (insert.x_scale(), insert.y_scale(), insert.z_scale()),
+            (x_scale, 1.0, 1.0)
+        );
+    }
+    let audit = read.audit();
+    assert_eq!(audit.error_count(), 0, "{audit:?}");
+}
+
+#[test]
+fn nested_selection_roundtrips_dwg() {
+    nested_selection_roundtrips(&Dwg);
+}
+
+#[test]
+fn nested_selection_roundtrips_dxf() {
+    nested_selection_roundtrips(&Dxf);
 }
 
 fn selection_v1_roundtrips_middle_insert(format: &dyn Format) {

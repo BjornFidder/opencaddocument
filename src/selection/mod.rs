@@ -1,5 +1,6 @@
 #![doc = include_str!("../../docs/selection.md")]
 
+mod block_definition;
 mod capture;
 mod layout;
 pub mod reconstruct;
@@ -81,6 +82,7 @@ pub enum SelectionSlot {
 pub enum ContextRole {
     ModelSpace,
     PaperSpace,
+    BlockDefinition,
     MLineStyleDictionary,
     ByLayer,
     ByBlock,
@@ -158,6 +160,16 @@ impl DocumentSelection {
         request: &PaperSpaceReconstructionRequest,
     ) -> Result<ReconstructionOutcome, ReconstructionError> {
         reconstruct::run_paperspace(self, target, request)
+    }
+
+    /// Bind selected roots from one local block definition to an existing local block definition.
+    /// Geometry is interpreted in the target definition's coordinates.
+    pub fn reconstruct_in_block_definition(
+        &self,
+        target: &Document,
+        request: &BlockDefinitionReconstructionRequest,
+    ) -> Result<ReconstructionOutcome, ReconstructionError> {
+        reconstruct::run_in_block_definition(self, target, request)
     }
 
     pub fn capture(

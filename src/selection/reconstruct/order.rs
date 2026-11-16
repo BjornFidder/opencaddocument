@@ -33,16 +33,24 @@ impl Order {
             Destination::PaperSpace(layout) => {
                 super::super::layout::paper_block(doc, index, layout)
             }
+            Destination::BlockDefinition(owner) => doc
+                .block_records
+                .iter()
+                .find(|block| block.handle == owner)
+                .filter(|block| super::super::block_definition::is_local(doc, block)),
         }
-        .ok_or_else(|| unsafe_target("inconsistent target layout identity"))?;
+        .ok_or_else(|| unsafe_target("inconsistent target owner block identity"))?;
         let owner = block.handle;
-        if index.counts.get(&owner) != Some(&1) || index.inconsistent.contains(&owner) {
-            return Err(unsafe_target("ambiguous target layout identity"));
+        if owner.is_null()
+            || index.counts.get(&owner) != Some(&1)
+            || index.inconsistent.contains(&owner)
+        {
+            return Err(unsafe_target("ambiguous target owner block identity"));
         }
         let mut members = block.entity_handles.clone();
         let member_keys: BTreeSet<_> = members.iter().copied().collect();
         if member_keys.len() != members.len() || member_keys.contains(&Handle::NULL) {
-            return Err(unsafe_target("duplicate or null layout member"));
+            return Err(unsafe_target("duplicate or null block member"));
         }
         let flat: Vec<_> = doc
             .entities()
@@ -70,7 +78,7 @@ impl Order {
                     .is_none_or(|owners| owners.as_slice() != [owner])
             })
         {
-            return Err(unsafe_target("inconsistent live layout membership"));
+            return Err(unsafe_target("inconsistent live block membership"));
         }
         let dictionaries: Vec<_> = doc
             .objects
@@ -93,12 +101,12 @@ impl Order {
                     return Err(unsafe_target("duplicate ACAD_SORTENTS registration"));
                 }
             }
-            _ => return Err(unsafe_target("ambiguous layout extension dictionary")),
+            _ => return Err(unsafe_target("ambiguous owner block extension dictionary")),
         }
         for (key, object) in &doc.objects {
             if let ObjectType::SortEntitiesTable(v) = object {
                 if v.block_owner_handle == owner && Some(*key) != table {
-                    return Err(unsafe_target("unregistered layout SortEnts table"));
+                    return Err(unsafe_target("unregistered owner block SortEnts table"));
                 }
             }
         }
@@ -117,7 +125,7 @@ impl Order {
             }
             if v.entries().any(|e| !member_keys.contains(&e.entity_handle)) {
                 return Err(unsafe_target(
-                    "SortEnts entry outside current layout membership",
+                    "SortEnts entry outside current block membership",
                 ));
             }
             members.sort_by_key(|&h| v.effective_sort_handle(h).value());
@@ -134,7 +142,7 @@ impl Order {
                 .copied()
                 .eq(members.iter().copied().filter(|h| live.contains(h)))
             {
-                return Err(unsafe_target("flat and block layout order disagree"));
+                return Err(unsafe_target("flat and block member order disagree"));
             }
         }
         Ok(Self {
@@ -191,7 +199,7 @@ impl Order {
                 doc.objects.insert(h, ObjectType::Dictionary(d));
                 if doc.extension_dictionary_handle(self.owner) != Some(h) {
                     return Err(construction(
-                        "extension dictionary is not registered for the target layout",
+                        "extension dictionary is not registered for the target owner block",
                     ));
                 }
                 h
@@ -204,7 +212,7 @@ impl Order {
                     .next()
                     .ok_or_else(|| construction("missing SortEnts handle"))?;
                 let Some(ObjectType::Dictionary(dict)) = doc.objects.get_mut(&dictionary) else {
-                    return Err(construction("missing layout extension dictionary"));
+                    return Err(construction("missing owner block extension dictionary"));
                 };
                 dict.add_entry(SortEntitiesTable::DICTIONARY_KEY, h);
                 h
