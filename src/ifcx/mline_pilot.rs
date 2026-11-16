@@ -1,4 +1,4 @@
-//! Preserve ModelSpace MLINE roots through shared DocumentSelection backing.
+//! Preserve MLINE roots through owner-scoped DocumentSelection backing.
 use super::*;
 use crate::objects::{ObjectType, SortEntitiesTable};
 use crate::selection::*;
@@ -6,13 +6,38 @@ use crate::selection_storage;
 
 mod retention;
 pub use retention::IfccadRoundtripContext;
-use retention::RetainedResources;
 pub(super) use retention::SavedIdentities;
+use retention::{Placement, RetainedResources};
 use std::collections::HashSet;
 
 const PROVIDER: &str = "opencaddocument";
 const SCHEMA: &str = "opencaddocument.document-selection";
 const ROOT_LINETYPE: &str = "root-linetype";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Owner<T = Handle> {
+    Model,
+    Paper(T),
+    Block(T),
+}
+
+impl<T> Owner<T> {
+    fn storage_version(self) -> u32 {
+        match self {
+            Self::Model => 1,
+            Self::Paper(_) => 2,
+            Self::Block(_) => 3,
+        }
+    }
+
+    fn role(self) -> ContextRole {
+        match self {
+            Self::Model => ContextRole::ModelSpace,
+            Self::Paper(_) => ContextRole::PaperSpace,
+            Self::Block(_) => ContextRole::BlockDefinition,
+        }
+    }
+}
 
 fn error(message: impl std::fmt::Display) -> Error {
     annotation::invalid(&format!("MLINE preservation pilot: {message}"))
@@ -21,6 +46,7 @@ fn error(message: impl std::fmt::Display) -> Error {
 pub(super) fn capture_group(
     writer: &mut Writer<'_>,
     entities: &[&EntityType],
+    owner: Owner,
 ) -> Result<HashMap<Handle, IfccadEntity>, Error> {
     use ifccad::*;
     let roots: Vec<_> = entities
@@ -73,7 +99,7 @@ pub(super) fn capture_group(
         storage_backing: None,
         payload: Some(IfccadPreservationPayload {
             schema: SCHEMA.into(),
-            version: 1,
+            version: owner.storage_version(),
             kind: IfccadPreservationPayloadKind::AdapterSnapshot,
             bytes,
         }),
@@ -178,31 +204,51 @@ pub(super) fn check_preservation_scope(drawing: &IfccadDocument) -> Result<(), E
     let Some(envelope) = &drawing.preservation else {
         return Ok(());
     };
-    let model_records: HashSet<_> = drawing
+    let live_records: HashMap<_, _> = drawing
         .model
         .entities
         .iter()
         .filter_map(|e| e.as_opaque().map(|e| e.preservation_record_id))
+        .map(|id| (id, Owner::Model))
+        .chain(drawing.paper_layouts.iter().flat_map(|paper| {
+            paper.entities.iter().filter_map(|e| {
+                e.as_opaque()
+                    .map(|e| (e.preservation_record_id, Owner::Paper(paper.id)))
+            })
+        }))
+        .chain(drawing.blocks.iter().flat_map(|block| {
+            block.entities.iter().filter_map(|e| {
+                e.as_opaque()
+                    .map(|e| (e.preservation_record_id, Owner::Block(block.id)))
+            })
+        }))
         .collect();
-    let backing_records: HashSet<_> = envelope
-        .records
-        .iter()
-        .filter(|r| model_records.contains(&r.id))
-        .filter_map(|r| r.storage_backing)
-        .collect();
+    let mut backing_records = HashMap::new();
+    for record in &envelope.records {
+        if let (Some(&owner), Some(backing)) =
+            (live_records.get(&record.id), record.storage_backing)
+        {
+            if backing_records
+                .insert(backing, owner)
+                .is_some_and(|prior| prior != owner)
+            {
+                return Err(error("preservation backing is shared across owners"));
+            }
+        }
+    }
     let mut used_sources = HashSet::new();
     for record in &envelope.records {
-        let supported = if model_records.contains(&record.id) {
+        let supported = if live_records.contains_key(&record.id) {
             record.storage_backing.is_some()
                 && record.conditions.is_empty()
                 && record.representation == ifccad::IfccadPreservationRepresentation::CodecTyped
-        } else if backing_records.contains(&record.id) {
+        } else if let Some(&owner) = backing_records.get(&record.id) {
             record.bindings.is_empty()
                 && record.conditions.is_empty()
                 && record.representation == ifccad::IfccadPreservationRepresentation::CodecTyped
                 && record.payload.as_ref().is_some_and(|p| {
                     p.schema == SCHEMA
-                        && p.version == 1
+                        && p.version == owner.storage_version()
                         && p.kind == ifccad::IfccadPreservationPayloadKind::AdapterSnapshot
                 })
         } else {
@@ -230,18 +276,52 @@ pub(super) fn check_preservation_scope(drawing: &IfccadDocument) -> Result<(), E
     Ok(())
 }
 
-pub(super) fn recognizes(_drawing: &IfccadDocument, entity: &IfccadEntity) -> bool {
-    entity.as_opaque().is_some()
-}
-
 pub(super) fn restore(
     drawing: &IfccadDocument,
     document: &mut Document,
     names: &Names,
     handles: &mut HashMap<u64, Handle>,
     losses: &mut Losses,
-    context: Option<&mut IfccadRoundtripContext>,
+    mut context: Option<&mut IfccadRoundtripContext>,
+    sheets: &[(Handle, &IfccadPaperLayout)],
 ) -> Result<(), Error> {
+    let mut scopes = vec![(Owner::Model, drawing.model.entities.as_slice())];
+    for &(block, sheet) in sheets {
+        let layout = layout::layout_handle(document, block)
+            .ok_or_else(|| error("missing imported paper layout"))?;
+        if let Some(context) = context.as_deref_mut() {
+            context.remember_layout(layout, sheet.id);
+        }
+        scopes.push((Owner::Paper(layout), &sheet.entities));
+    }
+    for block in &drawing.blocks {
+        let record = names
+            .blocks
+            .get(&block.id)
+            .and_then(|name| document.block_records.get(name));
+        let Some(record) = record else {
+            if block
+                .entities
+                .iter()
+                .any(|entity| entity.as_opaque().is_some())
+            {
+                return Err(error("missing imported block for retained MLINE"));
+            }
+            continue;
+        };
+        if block
+            .entities
+            .iter()
+            .any(|entity| entity.as_opaque().is_some())
+            && !crate::selection::block_definition::is_local(document, record)
+        {
+            return Err(error("retained MLINE requires a local block definition"));
+        }
+        if let Some(context) = context.as_deref_mut() {
+            context.remember_block(record.handle, block.id);
+        }
+        scopes.push((Owner::Block(record.handle), &block.entities));
+    }
     let Some(envelope) = &drawing.preservation else {
         if let Some(context) = context {
             context.remember_entities(handles);
@@ -254,106 +334,116 @@ pub(super) fn restore(
     let mut claimed = HashSet::new();
     let mut roots = HashMap::new();
     let mut resources = HashMap::<_, BTreeMap<SelectionRecordKey, Handle>>::new();
-    for opaque in drawing
-        .model
-        .entities
-        .iter()
-        .filter_map(IfccadEntity::as_opaque)
-    {
-        let record = records[&opaque.preservation_record_id];
-        let id = record.storage_backing.expect("checked backing");
-        let backing = records[&id];
-        if let std::collections::hash_map::Entry::Vacant(entry) = selections.entry(id) {
-            let selection = selection_storage::decode(
-                &backing.payload.as_ref().expect("checked payload").bytes,
-            )
-            .map_err(error)?;
-            if selection.namespace() != backing.source_key {
-                return Err(error("preservation package namespace mismatch"));
+    for &(owner, entities) in &scopes {
+        for opaque in entities.iter().filter_map(IfccadEntity::as_opaque) {
+            let record = records[&opaque.preservation_record_id];
+            let id = record.storage_backing.expect("checked backing");
+            let backing = records[&id];
+            if let std::collections::hash_map::Entry::Vacant(entry) = selections.entry(id) {
+                let selection = selection_storage::decode(
+                    &backing.payload.as_ref().expect("checked payload").bytes,
+                )
+                .map_err(error)?;
+                if selection.namespace() != backing.source_key {
+                    return Err(error("preservation package namespace mismatch"));
+                }
+                entry.insert(selection);
             }
-            entry.insert(selection);
+            let selection = &selections[&id];
+            let prefix = format!("{}/entity/", selection.namespace());
+            let handle = record
+                .source_key
+                .strip_prefix(&prefix)
+                .and_then(|key| {
+                    let value = key.parse::<u64>().ok()?;
+                    (value != 0 && value.to_string() == key).then_some(Handle::new(value))
+                })
+                .ok_or_else(|| error("invalid preservation root key"))?;
+            let key = SelectionRecordKey {
+                kind: SelectionRecordKind::Entity,
+                handle,
+            };
+            if !selection.roots().contains(&key)
+                || !selection
+                    .records()
+                    .iter()
+                    .any(|r| r.key == key && matches!(r.payload, SelectionPayload::MLine(_)))
+            {
+                return Err(error("preservation root is not a captured MLINE"));
+            }
+            if !claimed.insert((id, key)) {
+                return Err(error("duplicate preservation root"));
+            }
+            if !selection.requirements().iter().any(|requirement| {
+                requirement.source == key
+                    && requirement.slot == SelectionSlot::Owner
+                    && requirement.disposition == RequirementDisposition::Context(owner.role())
+            }) {
+                return Err(error(
+                    "preservation root owner does not match its drawing scope",
+                ));
+            }
+            roots.insert(record.id, key);
         }
-        let selection = &selections[&id];
-        let prefix = format!("{}/entity/", selection.namespace());
-        let handle = record
-            .source_key
-            .strip_prefix(&prefix)
-            .and_then(|key| {
-                let value = key.parse::<u64>().ok()?;
-                (value != 0 && value.to_string() == key).then_some(Handle::new(value))
-            })
-            .ok_or_else(|| error("invalid preservation root key"))?;
-        let key = SelectionRecordKey {
-            kind: SelectionRecordKind::Entity,
-            handle,
-        };
-        if !selection.roots().contains(&key)
-            || !selection
-                .records()
-                .iter()
-                .any(|r| r.key == key && matches!(r.payload, SelectionPayload::MLine(_)))
-        {
-            return Err(error("preservation root is not a captured MLINE"));
-        }
-        if !claimed.insert((id, key)) {
-            return Err(error("duplicate preservation root"));
-        }
-        roots.insert(record.id, key);
     }
     let mut blocked = Vec::new();
-    let mut context = context;
     // Insert from back to front so consecutive roots share the same order
     // semantics as roots separated by native entities.
-    for (i, opaque, record) in
-        drawing
-            .model
-            .entities
-            .iter()
-            .enumerate()
-            .rev()
-            .filter_map(|(i, e)| {
-                let opaque = e.as_opaque()?;
-                Some((i, opaque, records[&opaque.preservation_record_id]))
-            })
-    {
-        let following = &drawing.model.entities[i + 1..];
-        let order = following
-            .iter()
-            .find_map(|e| handles.get(&e.id()).copied())
-            .map_or(SelectionDrawOrder::Append, SelectionDrawOrder::Before);
-        let target = RestoreTarget {
-            document,
-            names,
-            handles,
-            losses,
-        };
-        let pattern = root_pattern_binding(record)?;
-        let id = record.storage_backing.expect("checked backing");
-        let root = roots[&record.id];
-        if let Some(reason) = restore_one(
-            opaque,
-            &selections[&id],
-            root,
-            resources.entry(id).or_default(),
-            pattern,
-            order,
-            target,
-        )? {
-            blocked.push((opaque, record, pattern, reason, following));
-        } else if let Some(context) = context.as_deref_mut() {
-            context.remember_mline(handles[&opaque.id], record);
+    for (owner, entities) in scopes {
+        for (i, opaque, record) in entities.iter().enumerate().rev().filter_map(|(i, e)| {
+            let opaque = e.as_opaque()?;
+            Some((i, opaque, records[&opaque.preservation_record_id]))
+        }) {
+            let following = &entities[i + 1..];
+            let order = following
+                .iter()
+                .find_map(|e| handles.get(&e.id()).copied())
+                .map_or(SelectionDrawOrder::Append, SelectionDrawOrder::Before);
+            let target = RestoreTarget {
+                owner,
+                document,
+                names,
+                handles,
+                losses,
+            };
+            let pattern = root_pattern_binding(record)?;
+            let id = record.storage_backing.expect("checked backing");
+            let root = roots[&record.id];
+            if let Some(reason) = restore_one(
+                opaque,
+                &selections[&id],
+                root,
+                resources.entry(id).or_default(),
+                pattern,
+                order,
+                target,
+            )? {
+                blocked.push((opaque, record, pattern, reason, owner, following));
+            } else if let Some(context) = context.as_deref_mut() {
+                context.remember_mline(handles[&opaque.id], record);
+            }
         }
     }
     if let Some(context) = context {
         context.remember_entities(handles);
         context.remember_resources(document, names);
-        for (opaque, record, pattern, reason, following) in blocked.into_iter().rev() {
+        for (opaque, record, pattern, reason, owner, following) in blocked.into_iter().rev() {
             let anchors = following
                 .iter()
                 .filter_map(|e| handles.get(&e.id()).copied())
                 .collect();
             let resources = RetainedResources::from_import(document, names, opaque, pattern)?;
-            context.retain(drawing, opaque, record, reason, resources, anchors)?;
+            context.retain(
+                drawing,
+                opaque,
+                record,
+                reason,
+                resources,
+                Placement {
+                    owner,
+                    following: anchors,
+                },
+            )?;
         }
     } else if !blocked.is_empty() {
         return Err(error("blocked MLINE requires an IFCCAD roundtrip context"));
@@ -376,6 +466,7 @@ fn root_pattern_binding(
 }
 
 struct RestoreTarget<'a> {
+    owner: Owner,
     document: &'a mut Document,
     names: &'a Names,
     handles: &'a mut HashMap<u64, Handle>,
@@ -392,6 +483,7 @@ fn restore_one(
     target: RestoreTarget<'_>,
 ) -> Result<Option<String>, Error> {
     let RestoreTarget {
+        owner,
         document,
         names,
         handles,
@@ -463,28 +555,52 @@ fn restore_one(
         };
         resources.insert(r.key, ResourceAction::Create { name });
     }
-    let request = ReconstructionRequest {
-        model_space: document.header.model_space_block_handle,
-        coordinates: CoordinatePolicy::DrawingCoordinates,
-        roots: vec![RootReconstruction {
-            root,
-            transform: SelectionPlacement::Identity,
-            order,
-            layer: Some(layer),
-            linetype: Some(linetype),
-            appearance: RootAppearanceOverrides {
-                color: opaque.appearance.as_ref().map(|_| current.color),
-                line_weight: Some(current.line_weight),
-                transparency: Some(current.transparency),
-                invisible: Some(!opaque.visible),
+    let roots = vec![RootReconstruction {
+        root,
+        transform: SelectionPlacement::Identity,
+        order,
+        layer: Some(layer),
+        linetype: Some(linetype),
+        appearance: RootAppearanceOverrides {
+            color: opaque.appearance.as_ref().map(|_| current.color),
+            line_weight: Some(current.line_weight),
+            transparency: Some(current.transparency),
+            invisible: Some(!opaque.visible),
+        },
+    }];
+    let outcome = match owner {
+        Owner::Model => selection.reconstruct_available(
+            document,
+            &ReconstructionRequest {
+                model_space: document.header.model_space_block_handle,
+                coordinates: CoordinatePolicy::DrawingCoordinates,
+                roots,
+                resources,
+                external: vec![],
             },
-        }],
-        resources,
-        external: vec![],
-    };
-    let outcome = selection
-        .reconstruct_available(document, &request)
-        .map_err(error)?;
+        ),
+        Owner::Paper(layout) => selection.reconstruct_paperspace(
+            document,
+            &PaperSpaceReconstructionRequest {
+                layout,
+                coordinates: CoordinatePolicy::DrawingCoordinates,
+                roots,
+                resources,
+                external: vec![],
+            },
+        ),
+        Owner::Block(block_record) => selection.reconstruct_in_block_definition(
+            document,
+            &BlockDefinitionReconstructionRequest {
+                block_record,
+                coordinates: CoordinatePolicy::DrawingCoordinates,
+                roots,
+                resources,
+                external: vec![],
+            },
+        ),
+    }
+    .map_err(error)?;
     let entity = match &outcome.roots[0].status {
         RootReconstructionStatus::Applied { entity, .. } => *entity,
         RootReconstructionStatus::Blocked { reasons } => {
@@ -508,9 +624,20 @@ fn restore_one(
 }
 
 pub(super) fn model_entities(document: &Document) -> Vec<&EntityType> {
-    let mut entities: Vec<_> = document.model_space_entities().collect();
+    ordered_entities(
+        document,
+        document.header.model_space_block_handle,
+        document.model_space_entities().collect(),
+    )
+}
+
+pub(super) fn ordered_entities<'a>(
+    document: &Document,
+    block: Handle,
+    mut entities: Vec<&'a EntityType>,
+) -> Vec<&'a EntityType> {
     let Some(dict) = document
-        .extension_dictionary_handle(document.header.model_space_block_handle)
+        .extension_dictionary_handle(block)
         .and_then(|h| document.objects.get(&h))
     else {
         return entities;

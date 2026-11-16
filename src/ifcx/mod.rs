@@ -327,16 +327,20 @@ impl Ifcx {
         let papers = layout::read(drawing, &mut document, &mut losses)?;
         let mut sheets: Vec<&IfccadPaperLayout> = drawing.paper_layouts.iter().collect();
         sheets.sort_by_key(|paper| paper.tab_index);
-        let sheets = papers
+        let sheets: Vec<_> = papers
             .iter()
             .zip(sheets)
-            .map(|(owner, paper)| (*owner, &paper.entities));
+            .map(|(owner, paper)| (*owner, paper))
+            .collect();
         let model = (Handle::NULL, &drawing.model.entities);
         let mut handles = HashMap::new();
-        for (owner, entities) in members.into_iter().chain(sheets).chain([model]) {
+        let paper_entities = sheets
+            .iter()
+            .map(|(owner, paper)| (*owner, &paper.entities));
+        for (owner, entities) in members.into_iter().chain(paper_entities).chain([model]) {
             for entity in entities {
                 #[cfg(feature = "mline-pilot")]
-                if owner.is_null() && mline_pilot::recognizes(drawing, entity) {
+                if entity.as_opaque().is_some() {
                     continue;
                 }
                 if let Some(handle) =
@@ -415,6 +419,7 @@ impl Ifcx {
             &mut handles,
             &mut losses,
             context,
+            &sheets,
         )?;
         Ok(IfccadImportOutcome {
             document,
@@ -529,6 +534,8 @@ impl Ifcx {
             style_handles: HashMap::new(),
             symbols: HashMap::new(),
             blocks: HashMap::new(),
+            #[cfg(feature = "mline-pilot")]
+            block_ids: HashMap::new(),
             entity_ids: HashMap::new(),
             hatch_sources: HashMap::new(),
             viewport_clips: HashMap::new(),
@@ -549,7 +556,8 @@ impl Ifcx {
         #[cfg(feature = "mline-pilot")]
         let model_entities = mline_pilot::model_entities(document);
         #[cfg(feature = "mline-pilot")]
-        let mut opaque = mline_pilot::capture_group(&mut writer, &model_entities)?;
+        let mut opaque =
+            mline_pilot::capture_group(&mut writer, &model_entities, mline_pilot::Owner::Model)?;
         #[cfg(not(feature = "mline-pilot"))]
         let model_entities = document.model_space_entities();
         for entity in model_entities {
@@ -804,6 +812,8 @@ struct Writer<'a> {
     symbols: HashMap<Handle, IfccadSymbolSourceId>,
     /// Block ids by lower-case name; `None` for blocks IFCX cannot hold.
     blocks: HashMap<String, Option<u64>>,
+    #[cfg(feature = "mline-pilot")]
+    block_ids: HashMap<Handle, u64>,
     entity_ids: HashMap<Handle, u64>,
     /// Boundary source handles of each hatch loop, by hatch id.
     hatch_sources: HashMap<u64, Vec<Vec<Handle>>>,
@@ -977,10 +987,37 @@ impl Writer<'_> {
         }
         // The id is known before the members convert, so a block that
         // (wrongly) inserts itself does not recurse forever.
-        let id = self.drawing.id_counters.allocate_block_id()?;
+        #[cfg(feature = "mline-pilot")]
+        let saved_id = self
+            .roundtrip
+            .and_then(|context| context.block_id(record.handle));
+        #[cfg(not(feature = "mline-pilot"))]
+        let saved_id = None;
+        let id = match saved_id {
+            Some(id) => id,
+            None => self.drawing.id_counters.allocate_block_id()?,
+        };
         self.blocks.insert(key, Some(id));
+        #[cfg(feature = "mline-pilot")]
+        self.block_ids.insert(record.handle, id);
         let mut entities = Vec::new();
-        for entity in dimension_graphics::ordered_members(document, record)? {
+        let members = dimension_graphics::ordered_members(document, record)?;
+        #[cfg(feature = "mline-pilot")]
+        let mut opaque = if members
+            .iter()
+            .any(|entity| matches!(entity, EntityType::MLine(_)))
+            && crate::selection::block_definition::is_local(document, record)
+        {
+            mline_pilot::capture_group(self, &members, mline_pilot::Owner::Block(record.handle))?
+        } else {
+            HashMap::new()
+        };
+        for entity in members {
+            #[cfg(feature = "mline-pilot")]
+            if let Some(root) = opaque.remove(&entity.common().handle) {
+                entities.push(root);
+                continue;
+            }
             if let Some(entity) = self.entity(entity)? {
                 entities.push(entity);
             }

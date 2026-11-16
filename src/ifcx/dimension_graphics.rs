@@ -336,6 +336,8 @@ fn context<'a>(document: &'a Document, drawing: &IfccadDocument) -> Writer<'a> {
         style_handles: HashMap::new(),
         symbols: HashMap::new(),
         blocks: HashMap::new(),
+        #[cfg(feature = "mline-pilot")]
+        block_ids: HashMap::new(),
         entity_ids: HashMap::new(),
         hatch_sources: HashMap::new(),
         viewport_clips: HashMap::new(),

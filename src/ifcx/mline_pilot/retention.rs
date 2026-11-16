@@ -1,4 +1,6 @@
-use super::{empty_preservation, error, Handle, IfccadDocument, IfccadEntity, IfccadLinePatternId};
+use super::{
+    empty_preservation, error, Handle, IfccadDocument, IfccadEntity, IfccadLinePatternId, Owner,
+};
 use crate::ifcx::{Names, Writer};
 use crate::{Document, Error};
 use ifccad::{
@@ -21,6 +23,8 @@ pub struct IfccadRoundtripContext {
     packages: BTreeMap<IfccadPreservationRecordId, IfccadPreservationRecord>,
     entities: HashMap<Handle, u64>,
     layers: HashMap<Handle, u64>,
+    layouts: HashMap<Handle, u64>,
+    blocks: HashMap<Handle, u64>,
     patterns: HashMap<Handle, IfccadLinePatternId>,
     model_id: u64,
     roots: HashMap<Handle, (IfccadPreservationRecordId, Vec<IfccadPreservationBinding>)>,
@@ -33,7 +37,13 @@ struct BlockedMline {
     source: IfccadPreservationSource,
     reason: String,
     resources: RetainedResources,
-    following: Vec<Handle>,
+    placement: Placement,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct Placement {
+    pub(super) owner: Owner,
+    pub(super) following: Vec<Handle>,
 }
 
 #[derive(Clone, Debug)]
@@ -147,6 +157,8 @@ impl IfccadRoundtripContext {
             entities: HashMap::new(),
             roots: HashMap::new(),
             layers: HashMap::new(),
+            layouts: HashMap::new(),
+            blocks: HashMap::new(),
             patterns: HashMap::new(),
             model_id: drawing.model.id,
         }
@@ -166,7 +178,7 @@ impl IfccadRoundtripContext {
         record: &IfccadPreservationRecord,
         reason: String,
         resources: RetainedResources,
-        following: Vec<Handle>,
+        placement: Placement,
     ) -> Result<(), Error> {
         let source = drawing
             .preservation
@@ -189,7 +201,7 @@ impl IfccadRoundtripContext {
             source: source.clone(),
             reason,
             resources,
-            following,
+            placement,
         });
         Ok(())
     }
@@ -210,6 +222,22 @@ impl IfccadRoundtripContext {
 
     pub(in crate::ifcx) fn layer_id(&self, handle: Handle) -> Option<u64> {
         self.layers.get(&handle).copied()
+    }
+
+    pub(super) fn remember_layout(&mut self, handle: Handle, id: u64) {
+        self.layouts.insert(handle, id);
+    }
+
+    pub(in crate::ifcx) fn layout_id(&self, handle: Handle) -> Option<u64> {
+        self.layouts.get(&handle).copied()
+    }
+
+    pub(super) fn remember_block(&mut self, handle: Handle, id: u64) {
+        self.blocks.insert(handle, id);
+    }
+
+    pub(in crate::ifcx) fn block_id(&self, handle: Handle) -> Option<u64> {
+        self.blocks.get(&handle).copied()
     }
 
     pub(in crate::ifcx) fn pattern_id(&self, handle: Handle) -> Option<IfccadLinePatternId> {
@@ -280,6 +308,8 @@ impl IfccadRoundtripContext {
         self.counters = saved.counters;
         self.entities.extend(saved.entities);
         self.layers.extend(saved.layers);
+        self.layouts.extend(saved.layouts);
+        self.blocks.extend(saved.blocks);
         self.patterns.extend(saved.patterns);
         self.roots.extend(saved.roots);
     }
@@ -289,16 +319,51 @@ impl IfccadRoundtripContext {
             let mut opaque = item.opaque.clone();
             let mut record = item.record.clone();
             item.resources.remap(writer, &mut opaque, &mut record)?;
-            let model = &mut writer.drawing.model.entities;
+            let entities = match item.placement.owner {
+                Owner::Model => &mut writer.drawing.model.entities,
+                Owner::Paper(layout) => {
+                    let id = writer.layout_ids.get(&layout).ok_or_else(|| {
+                        error("retained MLINE paper layout is unavailable for export")
+                    })?;
+                    &mut writer
+                        .drawing
+                        .paper_layouts
+                        .iter_mut()
+                        .find(|paper| paper.id == *id)
+                        .ok_or_else(|| {
+                            error("retained MLINE paper layout is unavailable for export")
+                        })?
+                        .entities
+                }
+                Owner::Block(handle) => {
+                    let valid = writer.document.block_records.iter().any(|block| {
+                        block.handle == handle
+                            && crate::selection::block_definition::is_local(writer.document, block)
+                    });
+                    let id = writer
+                        .block_ids
+                        .get(&handle)
+                        .filter(|_| valid)
+                        .ok_or_else(|| error("retained MLINE block is unavailable for export"))?;
+                    &mut writer
+                        .drawing
+                        .blocks
+                        .iter_mut()
+                        .find(|block| block.id == *id)
+                        .ok_or_else(|| error("retained MLINE block is unavailable for export"))?
+                        .entities
+                }
+            };
             let position = item
+                .placement
                 .following
                 .iter()
                 .find_map(|handle| {
                     let id = writer.entity_ids.get(handle)?;
-                    model.iter().position(|entity| entity.id() == *id)
+                    entities.iter().position(|entity| entity.id() == *id)
                 })
-                .unwrap_or(model.len());
-            model.insert(position, IfccadEntity::Opaque(opaque));
+                .unwrap_or(entities.len());
+            entities.insert(position, IfccadEntity::Opaque(opaque));
             let envelope = writer
                 .drawing
                 .preservation
@@ -331,6 +396,8 @@ pub(in crate::ifcx) struct SavedIdentities {
     counters: IfccadIdCounters,
     entities: HashMap<Handle, u64>,
     layers: HashMap<Handle, u64>,
+    layouts: HashMap<Handle, u64>,
+    blocks: HashMap<Handle, u64>,
     patterns: HashMap<Handle, IfccadLinePatternId>,
     roots: HashMap<Handle, (IfccadPreservationRecordId, Vec<IfccadPreservationBinding>)>,
 }
@@ -376,6 +443,8 @@ impl SavedIdentities {
             counters: writer.drawing.id_counters,
             entities,
             layers,
+            layouts: writer.layout_ids.clone(),
+            blocks: writer.block_ids.clone(),
             patterns,
             roots,
         }

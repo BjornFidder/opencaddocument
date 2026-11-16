@@ -5,6 +5,338 @@ use opencaddocument::{
 };
 
 #[test]
+fn paper_mlines_restore_and_retain_on_their_own_layouts() {
+    use opencaddocument::ifccad::{
+        encode_ifccad_cbor_document, encode_ifccad_document, load_ifccad_bytes,
+        load_ifccad_cbor_bytes, IfccadLinePatternId, IfccadPreservationBinding,
+        IfccadPreservationTarget,
+    };
+    use opencaddocument::objects::ObjectType;
+
+    let mut source = Document::new();
+    source
+        .add_entity(EntityType::Line(Line::from_points(
+            Vector3::ZERO,
+            Vector3::new(1.0, 1.0, 0.0),
+        )))
+        .unwrap();
+    source.add_layout("Sheet B").unwrap();
+    for (name, x) in [("Layout1", 2.0), ("Sheet B", 12.0)] {
+        source
+            .add_entity_to_layout(
+                EntityType::MLine(MLine::from_points(&[
+                    Vector3::new(x, 3.0, 0.0),
+                    Vector3::new(x + 5.0, 3.0, 0.0),
+                ])),
+                name,
+            )
+            .unwrap();
+        source
+            .add_entity_to_layout(
+                EntityType::Line(Line::from_points(
+                    Vector3::new(x, 0.0, 0.0),
+                    Vector3::new(x + 1.0, 0.0, 0.0),
+                )),
+                name,
+            )
+            .unwrap();
+    }
+    let mut drawing = Ifcx.export_ifccad(&source).unwrap().drawing;
+    let find_sheet = |drawing: &opencaddocument::ifccad::IfccadDocument, name| {
+        drawing
+            .paper_layouts
+            .iter()
+            .position(|layout| layout.name == name)
+            .unwrap()
+    };
+    assert_eq!(drawing.paper_layouts.len(), 2);
+    let a = &drawing.paper_layouts[find_sheet(&drawing, "Layout1")];
+    let b = &drawing.paper_layouts[find_sheet(&drawing, "Sheet B")];
+    let (a_layout, b_layout) = (a.id, b.id);
+    let a = a.entities[0]
+        .as_opaque()
+        .expect("Sheet A preserves the MLINE")
+        .clone();
+    let b_line = b.entities[1].id();
+    let b = b.entities[0]
+        .as_opaque()
+        .expect("Sheet B preserves the MLINE")
+        .clone();
+    let missing = IfccadLinePatternId(250);
+    drawing.id_counters.next_line_pattern_id = 251;
+    let envelope = drawing.preservation.as_mut().unwrap();
+    let b_record = envelope
+        .records
+        .iter_mut()
+        .find(|r| r.id == b.preservation_record_id)
+        .unwrap();
+    b_record.bindings.push(IfccadPreservationBinding {
+        slot: "root-linetype".into(),
+        source_key: "missing-paper-pattern".into(),
+        target: IfccadPreservationTarget::LinePattern(missing),
+    });
+    let b_record = b_record.clone();
+    let b_backing = envelope
+        .records
+        .iter()
+        .find(|r| Some(r.id) == b_record.storage_backing)
+        .unwrap()
+        .clone();
+    let bytes = encode_ifccad_document(&drawing).unwrap();
+    if let Some(dir) = std::env::var_os("IFCCAD_PAPER_MLINE_REVIEW_DIR") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("paper-mline-input.ifccad"), bytes.bytes()).unwrap();
+    }
+    let input = load_ifccad_bytes(bytes.bytes(), Default::default()).unwrap();
+    let (mut imported, mut context) = Ifcx.import_ifccad_preserving(input.document()).unwrap();
+    let blocked: Vec<_> = context.blocked_entities().collect();
+    assert_eq!(blocked.len(), 1);
+    let (id, reason) = blocked[0];
+    assert_eq!(id, b.id);
+    assert!(reason.contains("Missing required line pattern 250"));
+    assert!(!imported.entity_handles.contains_key(&b.id));
+    let a_handle = imported.entity_handles[&a.id];
+    let owner = imported
+        .document
+        .get_entity(a_handle)
+        .unwrap()
+        .common()
+        .owner_handle;
+    assert!(imported
+        .document
+        .objects
+        .values()
+        .any(|object| matches!(object,
+            ObjectType::Layout(layout) if layout.name == "Layout1" && layout.block_record == owner
+        )));
+    let Some(EntityType::Line(line)) = imported
+        .document
+        .get_entity_mut(imported.entity_handles[&b_line])
+    else {
+        panic!("missing native paper line");
+    };
+    line.start.y = 4.0;
+    let saved = Ifcx
+        .export_ifccad_preserving(&imported.document, &mut context)
+        .unwrap()
+        .drawing;
+    let ifcx = encode_ifccad_document(&saved).unwrap();
+    let cbor = encode_ifccad_cbor_document(&saved).unwrap();
+    let ifcx = load_ifccad_bytes(ifcx.bytes(), Default::default()).unwrap();
+    let cbor = load_ifccad_cbor_bytes(cbor.bytes(), Default::default()).unwrap();
+    for saved in [ifcx.document(), cbor.document()] {
+        let sheet_a = &saved.paper_layouts[find_sheet(saved, "Layout1")];
+        let sheet_b = &saved.paper_layouts[find_sheet(saved, "Sheet B")];
+        assert_eq!((sheet_a.id, sheet_b.id), (a_layout, b_layout));
+        assert_eq!(sheet_a.entities.iter().map(|e| e.id()).next(), Some(a.id));
+        assert_eq!(
+            sheet_b.entities.iter().map(|e| e.id()).collect::<Vec<_>>(),
+            [b.id, b_line]
+        );
+        assert_eq!(sheet_b.entities[0].as_opaque(), Some(&b));
+        let saved_envelope = saved.preservation.as_ref().unwrap();
+        assert!(saved_envelope.records.contains(&b_record));
+        assert!(saved_envelope.records.contains(&b_backing));
+        let (reopened, context) = Ifcx.import_ifccad_preserving(saved).unwrap();
+        assert_eq!(
+            context
+                .blocked_entities()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>(),
+            [b.id]
+        );
+        assert!(matches!(
+            reopened.document.get_entity(reopened.entity_handles[&a.id]),
+            Some(EntityType::MLine(_))
+        ));
+        assert!(
+            matches!(reopened.document.get_entity(reopened.entity_handles[&b_line]), Some(EntityType::Line(line)) if line.start.y == 4.0)
+        );
+    }
+}
+
+#[test]
+fn nested_block_mlines_restore_and_retain_in_their_definition() {
+    use opencaddocument::entities::Insert;
+    use opencaddocument::ifccad::{
+        encode_ifccad_cbor_document, encode_ifccad_document, load_ifccad_bytes,
+        load_ifccad_cbor_bytes, IfccadLinePatternId, IfccadPreservationBinding,
+        IfccadPreservationTarget,
+    };
+    use opencaddocument::tables::BlockRecord;
+    use opencaddocument::Handle;
+
+    let mut source = Document::new();
+    source.header.insertion_units = 4;
+    let [inner, outer] = ["Inner", "Outer"].map(|name| {
+        let mut block = BlockRecord::new(name);
+        block.handle = source.allocate_handle();
+        block.block_entity_handle = source.allocate_handle();
+        block.block_end_handle = source.allocate_handle();
+        let owner = block.handle;
+        source.block_records.add(block).unwrap();
+        owner
+    });
+    for x in [2.0, 12.0] {
+        let mut mline =
+            MLine::from_points(&[Vector3::new(x, 3.0, 0.0), Vector3::new(x + 5.0, 3.0, 0.0)]);
+        mline.common.owner_handle = inner;
+        mline.common.linetype = "ByBlock".into();
+        source.add_entity(EntityType::MLine(mline)).unwrap();
+    }
+    let mut line = Line::from_points(Vector3::ZERO, Vector3::new(1.0, 0.0, 0.0));
+    line.common.owner_handle = inner;
+    source.add_entity(EntityType::Line(line)).unwrap();
+    let mut nested = Insert::new("Inner", Vector3::new(4.0, 5.0, 0.0));
+    nested.common.owner_handle = outer;
+    source.add_entity(EntityType::Insert(nested)).unwrap();
+    for x in [50.0, 60.0] {
+        source
+            .add_entity(EntityType::Insert(Insert::new(
+                "Outer",
+                Vector3::new(x, 10.0, 0.0),
+            )))
+            .unwrap();
+    }
+
+    let mut drawing = Ifcx.export_ifccad(&source).unwrap().drawing;
+    let block_index = |drawing: &opencaddocument::ifccad::IfccadDocument, name| {
+        drawing
+            .blocks
+            .iter()
+            .position(|block| block.name == name)
+            .unwrap()
+    };
+    let inner = &drawing.blocks[block_index(&drawing, "Inner")];
+    let inner_id = inner.id;
+    let outer_id = drawing.blocks[block_index(&drawing, "Outer")].id;
+    let a = inner.entities[0]
+        .as_opaque()
+        .expect("inner block preserves MLINE A")
+        .clone();
+    let b = inner.entities[1]
+        .as_opaque()
+        .expect("inner block preserves MLINE B")
+        .clone();
+    let line_id = inner.entities[2].id();
+    let moved = drawing.model.entities[0].id();
+    let stationary = drawing.model.entities[1].id();
+    let missing = IfccadLinePatternId(250);
+    drawing.id_counters.next_line_pattern_id = 251;
+    let envelope = drawing.preservation.as_mut().unwrap();
+    let record = envelope
+        .records
+        .iter_mut()
+        .find(|r| r.id == b.preservation_record_id)
+        .unwrap();
+    record.bindings.push(IfccadPreservationBinding {
+        slot: "root-linetype".into(),
+        source_key: "missing-block-pattern".into(),
+        target: IfccadPreservationTarget::LinePattern(missing),
+    });
+    let b_record = record.clone();
+    let b_backing = envelope
+        .records
+        .iter()
+        .find(|r| Some(r.id) == b_record.storage_backing)
+        .unwrap()
+        .clone();
+    assert_eq!(b_backing.payload.as_ref().unwrap().version, 3);
+    assert_eq!(
+        envelope
+            .records
+            .iter()
+            .find(|r| r.id == a.preservation_record_id)
+            .unwrap()
+            .storage_backing,
+        Some(b_backing.id)
+    );
+    let input_bytes = encode_ifccad_document(&drawing).unwrap();
+    if let Some(dir) = std::env::var_os("IFCCAD_BLOCK_MLINE_REVIEW_DIR") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("block-mline-input.ifccad"), input_bytes.bytes()).unwrap();
+    }
+    let input = load_ifccad_bytes(input_bytes.bytes(), Default::default()).unwrap();
+    let (mut imported, mut context) = Ifcx.import_ifccad_preserving(input.document()).unwrap();
+    assert!(!imported.entity_handles.contains_key(&b.id));
+    assert_eq!(
+        context
+            .blocked_entities()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>(),
+        [b.id]
+    );
+    let edit_insert = |doc: &mut Document, handle: Handle| {
+        let Some(EntityType::Insert(insert)) = doc.get_entity_mut(handle) else {
+            panic!("missing outer placement");
+        };
+        insert.insert_point = Vector3::new(35.0, -15.0, 4.0);
+        insert.rotation = std::f64::consts::FRAC_PI_3;
+    };
+    edit_insert(&mut imported.document, imported.entity_handles[&moved]);
+    let saved = Ifcx
+        .export_ifccad_preserving(&imported.document, &mut context)
+        .unwrap()
+        .drawing;
+    let ifcx = encode_ifccad_document(&saved).unwrap();
+    let ifcx = load_ifccad_bytes(ifcx.bytes(), Default::default()).unwrap();
+    let cbor = encode_ifccad_cbor_document(&saved).unwrap();
+    let cbor = load_ifccad_cbor_bytes(cbor.bytes(), Default::default()).unwrap();
+    for saved in [ifcx.document(), cbor.document()] {
+        let inner = &saved.blocks[block_index(saved, "Inner")];
+        let outer = &saved.blocks[block_index(saved, "Outer")];
+        assert_eq!((inner.id, outer.id), (inner_id, outer_id));
+        assert_eq!(
+            inner.entities.iter().map(|e| e.id()).collect::<Vec<_>>(),
+            [a.id, b.id, line_id]
+        );
+        assert_eq!(inner.entities[1].as_opaque(), Some(&b));
+        assert!(outer.entities.iter().all(|e| e.as_opaque().is_none()));
+        let envelope = saved.preservation.as_ref().unwrap();
+        assert!(envelope.records.contains(&b_record));
+        assert!(envelope.records.contains(&b_backing));
+        let (reopened, context) = Ifcx.import_ifccad_preserving(saved).unwrap();
+        assert_eq!(
+            context
+                .blocked_entities()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>(),
+            [b.id]
+        );
+        let Some(EntityType::MLine(line)) =
+            reopened.document.get_entity(reopened.entity_handles[&a.id])
+        else {
+            panic!("missing restored MLINE A");
+        };
+        assert_eq!(
+            line.common.owner_handle,
+            reopened.document.block_records.get("Inner").unwrap().handle
+        );
+        assert_eq!(line.vertices[0].position, Vector3::new(2.0, 3.0, 0.0));
+        assert!(line.common.linetype.eq_ignore_ascii_case("ByBlock"));
+        for (id, point, rotation) in [
+            (
+                moved,
+                Vector3::new(35.0, -15.0, 4.0),
+                std::f64::consts::FRAC_PI_3,
+            ),
+            (stationary, Vector3::new(60.0, 10.0, 0.0), 0.0),
+        ] {
+            let Some(EntityType::Insert(insert)) =
+                reopened.document.get_entity(reopened.entity_handles[&id])
+            else {
+                panic!("missing outer placement");
+            };
+            assert_eq!(insert.block_name, "Outer");
+            assert_eq!(insert.insert_point, point);
+            assert!((insert.rotation - rotation).abs() < 1e-12);
+        }
+    }
+}
+
+#[test]
 fn mline_pilot_roundtrips_existing_ifccad_envelope() {
     let mut source = Document::new();
     source.header.insertion_units = 4;
