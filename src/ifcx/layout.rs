@@ -60,17 +60,37 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
         else {
             continue;
         };
-        let id = writer.drawing.id_counters.allocate_layout_id()?;
+        #[cfg(feature = "mline-pilot")]
+        let saved_id = writer
+            .roundtrip
+            .and_then(|context| context.layout_id(layout.handle));
+        #[cfg(not(feature = "mline-pilot"))]
+        let saved_id = None;
+        let id = match saved_id {
+            Some(id) => id,
+            None => writer.drawing.id_counters.allocate_layout_id()?,
+        };
         writer.layout_ids.insert(layout.handle, id);
         let overall = overall_viewport(document, layout);
         let mut canvas = None;
         let mut entities = Vec::new();
-        for entity in document.entities_in_block(&record.name) {
+        let members = document.entities_in_block(&record.name);
+        #[cfg(feature = "mline-pilot")]
+        let members = mline_pilot::ordered_entities(document, record.handle, members.collect());
+        #[cfg(feature = "mline-pilot")]
+        let mut opaque =
+            mline_pilot::capture_group(writer, &members, mline_pilot::Owner::Paper(layout.handle))?;
+        for entity in members {
             if let EntityType::Viewport(viewport) = entity {
                 if Some(viewport.common.handle) == overall {
                     canvas = canvas_out(viewport, writer);
                     continue;
                 }
+            }
+            #[cfg(feature = "mline-pilot")]
+            if let Some(root) = opaque.remove(&entity.common().handle) {
+                entities.push(root);
+                continue;
             }
             if let Some(entity) = writer.entity(entity)? {
                 entities.push(entity);
@@ -742,7 +762,7 @@ fn position_by_tab(drawing: &IfccadDocument, paper: &IfccadPaperLayout) -> usize
         .count()
 }
 
-fn layout_handle(document: &Document, record: Handle) -> Option<Handle> {
+pub(super) fn layout_handle(document: &Document, record: Handle) -> Option<Handle> {
     document
         .objects
         .iter()

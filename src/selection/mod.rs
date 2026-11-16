@@ -1,6 +1,6 @@
 #![doc = include_str!("../../docs/selection.md")]
 
-mod block_definition;
+pub(crate) mod block_definition;
 mod capture;
 mod layout;
 pub mod reconstruct;

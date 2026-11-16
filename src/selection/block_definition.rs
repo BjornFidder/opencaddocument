@@ -9,7 +9,7 @@ pub(super) fn is_definition_name(name: &str) -> bool {
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("*Paper_Space"))
 }
 
-pub(super) fn is_local(doc: &Document, block: &BlockRecord) -> bool {
+pub(crate) fn is_local(doc: &Document, block: &BlockRecord) -> bool {
     let handle = block.handle;
     if !is_definition_name(&block.name)
         || !block.layout.is_null()
