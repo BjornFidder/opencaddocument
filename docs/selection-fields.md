@@ -4,7 +4,7 @@ This is the capture boundary against acadrust revision `cec07ce`. Exhaustive
 struct patterns in capture code force review when supported carriers acquire
 new fields. These classifications concern owned capture, not a durable byte
 layout or a promise to insert arbitrary values into another drawing. See
-[selection storage](selection-storage.md) for the durable V1 representation.
+[selection storage](selection-storage.md) for the durable representation.
 
 | Carrier | Retained typed values | Reference/context rules and exclusions |
 | --- | --- | --- |
@@ -27,8 +27,8 @@ layout or a promise to insert arbitrary values into another drawing. See
 | handle | actual source identity, globally unique among database entities, objects, table records and controls; lookup identity must agree |
 | layer, layer_handle | original values retained; included/external/missing Layer slot |
 | linetype, linetype_handle | original values retained; simple linetype slot or ByLayer/ByBlock context; dangling handles remain gaps |
-| owner_handle | retained source identity; must establish unambiguous ModelSpace context, compatible with source header and any explicit block memberships; no siblings copied |
-| entity_mode | absent, owned (0), model (2) retained with ModelSpace owner; paper/unknown modes unsupported |
+| owner_handle | retained block identity. ModelSpace agrees with the source header and any explicit membership. PaperSpace has a reciprocal Layout object link and unique explicit membership. No siblings copied. |
+| entity_mode | absent, owned (0), model (2) retained with ModelSpace owner. PaperSpace accepts absent, owned (0) or paper (1), recorded as explicit owner mode (0). |
 | color, line_weight, linetype_scale, transparency, color_name, invisible, shadow_flags | typed values retained without normalization |
 | material_flags, plotstyle_flags | inheritance scalars 0/1 retained; reserved or object-reference modes unsupported |
 | color_book_handle, full_visual_style_handle, face_visual_style_handle, edge_visual_style_handle, material_handle, plotstyle_handle | must be absent; no object reference silently discarded, including explicit null optional references |
@@ -50,7 +50,7 @@ data, public object XDATA/raw EED, reactors and extension-dictionary lookup are
 audited. Any owned extension dictionary suffices to reject unsupported attached
 semantics; the API does not pick one of several dictionaries to preserve.
 
-ModelSpace and ACAD_MLINESTYLE dictionary registration are contextual roles, not
+ModelSpace, PaperSpace and ACAD_MLINESTYLE dictionary registration are contextual roles, not
 copied owner records. For a style, the header, dictionary ownership, NOD role
 entry and relevant style entry must agree. Missing supported registrations stay
 gaps; conflicting/duplicate relevant registrations fail. Unrelated dictionary

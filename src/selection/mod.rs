@@ -1,6 +1,7 @@
 #![doc = include_str!("../../docs/selection.md")]
 
 mod capture;
+mod layout;
 pub mod reconstruct;
 mod references;
 
@@ -79,6 +80,7 @@ pub enum SelectionSlot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextRole {
     ModelSpace,
+    PaperSpace,
     MLineStyleDictionary,
     ByLayer,
     ByBlock,
@@ -146,6 +148,16 @@ impl DocumentSelection {
         request: &ReconstructionRequest,
     ) -> Result<ReconstructionOutcome, ReconstructionError> {
         reconstruct::run(self, target, request)
+    }
+
+    /// Bind selected roots from one source paper layout to an existing target paper layout.
+    /// The target layout is identified by its Layout object handle.
+    pub fn reconstruct_paperspace(
+        &self,
+        target: &Document,
+        request: &PaperSpaceReconstructionRequest,
+    ) -> Result<ReconstructionOutcome, ReconstructionError> {
+        reconstruct::run_paperspace(self, target, request)
     }
 
     pub fn capture(

@@ -414,7 +414,6 @@ impl Capture<'_> {
             || *material_flags > 1
             || *plotstyle_flags > 1
             || r12_metadata.is_some()
-            || entity_mode.is_some_and(|v| v != 0 && v != 2)
         {
             return Err(error(
                 SelectionErrorKind::UnsupportedContent,
@@ -423,67 +422,20 @@ impl Capture<'_> {
                 "entity contains attachments or resource/mode semantics outside capture coverage",
             ));
         }
-        let model = self.doc.block_records.get("*Model_Space").ok_or_else(|| {
-            error(
-                SelectionErrorKind::UnsupportedContent,
-                Some(k),
-                Some(SelectionSlot::Owner),
-                "source has no ModelSpace block",
-            )
-        })?;
-        if self
-            .doc
-            .block_records
-            .iter()
-            .filter(|b| b.name.eq_ignore_ascii_case("*Model_Space"))
-            .count()
-            != 1
-        {
-            return Err(error(
-                SelectionErrorKind::AmbiguousIdentity,
-                Some(k),
-                Some(SelectionSlot::Owner),
-                "source ModelSpace name is ambiguous",
-            ));
-        }
-        self.index.unique(
-            key(SelectionRecordKind::Object, model.handle),
-            Some(SelectionSlot::Owner),
-        )?;
-        if owner_handle.is_null()
-            || *owner_handle != model.handle
-            || (!self.doc.header.model_space_block_handle.is_null()
-                && self.doc.header.model_space_block_handle != model.handle)
-        {
-            return Err(error(
-                SelectionErrorKind::UnsupportedContent,
-                Some(k),
-                Some(SelectionSlot::Owner),
-                "only unambiguous ModelSpace roots are supported",
-            ));
-        }
-        if self
-            .index
-            .memberships
-            .get(&k.handle)
-            .is_some_and(|owners| owners.len() != 1 || owners[0] != model.handle)
-        {
-            return Err(error(
-                SelectionErrorKind::ReferenceConflict,
-                Some(k),
-                Some(SelectionSlot::Owner),
-                "source block membership contradicts the root's ModelSpace owner",
-            ));
+        let (role, name) = self.owner(k, *owner_handle, *entity_mode)?;
+        if role == ContextRole::PaperSpace {
+            // The layout owns the root explicitly in a portable selection.
+            *entity_mode = Some(0);
         }
         self.requirement(
             Reference {
                 source: k,
                 slot: SelectionSlot::Owner,
                 handle: Some(*owner_handle),
-                name: Some(model.name.clone()),
+                name: Some(name),
                 kind: SelectionRecordKind::Object,
             },
-            RequirementDisposition::Context(ContextRole::ModelSpace),
+            RequirementDisposition::Context(role),
         );
         self.reference(Reference {
             source: k,
@@ -519,6 +471,66 @@ impl Capture<'_> {
             );
         }
         Ok(())
+    }
+
+    fn owner(
+        &self,
+        root: SelectionRecordKey,
+        owner: Handle,
+        mode: Option<u8>,
+    ) -> Result<(ContextRole, String), SelectionError> {
+        let fail = |kind, message| error(kind, Some(root), Some(SelectionSlot::Owner), message);
+        let unsupported = |message| fail(SelectionErrorKind::UnsupportedContent, message);
+        let Some(block) = self.doc.block_records.iter().find(|b| b.handle == owner) else {
+            return Err(unsupported("root has no layout block owner"));
+        };
+        self.index.unique(
+            key(SelectionRecordKind::Object, owner),
+            Some(SelectionSlot::Owner),
+        )?;
+        let model = self.doc.header.model_space_block_handle;
+        let role = if block.is_model_space() && (model.is_null() || owner == model) {
+            if self
+                .doc
+                .block_records
+                .iter()
+                .filter(|b| b.is_model_space())
+                .count()
+                != 1
+            {
+                return Err(fail(
+                    SelectionErrorKind::AmbiguousIdentity,
+                    "source ModelSpace name is ambiguous",
+                ));
+            }
+            ContextRole::ModelSpace
+        } else if super::layout::paper_block(self.doc, &self.index, block.layout)
+            .is_some_and(|paper| paper.handle == owner)
+        {
+            ContextRole::PaperSpace
+        } else {
+            return Err(unsupported(
+                "root owner is not an unambiguous drawing layout",
+            ));
+        };
+        if !matches!(
+            (role, mode),
+            (_, None | Some(0))
+                | (ContextRole::ModelSpace, Some(2))
+                | (ContextRole::PaperSpace, Some(1))
+        ) {
+            return Err(unsupported("entity mode disagrees with its layout owner"));
+        }
+        let members = self.index.memberships.get(&root.handle);
+        if members.is_some_and(|owners| owners.as_slice() != [owner])
+            || (role == ContextRole::PaperSpace && members.is_none())
+        {
+            return Err(fail(
+                SelectionErrorKind::ReferenceConflict,
+                "source block membership contradicts the root's layout owner",
+            ));
+        }
+        Ok((role, block.name.clone()))
     }
     fn record(&mut self, k: SelectionRecordKey) -> Result<(), SelectionError> {
         self.index.audit(self.doc, k)?;

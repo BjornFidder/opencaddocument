@@ -84,17 +84,22 @@ fn resource_kind(
     };
     let (kind, name, handle) = match (&req.slot, payload, common) {
         (Owner, _, Some(c)) => {
+            let valid_role = match (&req.disposition, req.source_name.as_deref()) {
+                (Context(ContextRole::ModelSpace), Some(name)) => {
+                    name.eq_ignore_ascii_case("*Model_Space")
+                }
+                (Context(ContextRole::PaperSpace), Some(name)) => {
+                    super::super::layout::paper_block_name(name) && c.entity_mode == Some(0)
+                }
+                _ => false,
+            };
             return if !c.owner_handle.is_null()
                 && req.source_handle == Some(c.owner_handle)
-                && req
-                    .source_name
-                    .as_deref()
-                    .is_some_and(|name| name.eq_ignore_ascii_case("*Model_Space"))
-                && req.disposition == Context(ContextRole::ModelSpace)
+                && valid_role
             {
                 Ok(None)
             } else {
-                Err("inconsistent ModelSpace owner requirement")
+                Err("inconsistent layout owner requirement")
             };
         }
         (StyleRegistration, SelectionPayload::MLineStyle(v), _) => {
@@ -160,7 +165,7 @@ fn names_match(a: &str, b: &str) -> bool {
         .eq(b.chars().flat_map(char::to_uppercase))
 }
 
-pub(super) fn selection(s: &DocumentSelection) -> Result<()> {
+pub(super) fn selection(s: &DocumentSelection, version: frame::Version) -> Result<()> {
     if [
         s.roots.len(),
         s.records.len(),
@@ -181,7 +186,6 @@ pub(super) fn selection(s: &DocumentSelection) -> Result<()> {
     }
     let mut records = BTreeMap::new();
     let mut identities = BTreeSet::new();
-    let mut model_space = None;
     let mut style_dictionary = None;
     for (i, r) in s.records.iter().enumerate() {
         if r.key.handle.is_null()
@@ -194,16 +198,8 @@ pub(super) fn selection(s: &DocumentSelection) -> Result<()> {
             ));
         }
         records.insert(r.key, &r.payload);
-        let owner = match &r.payload {
-            SelectionPayload::Line(v) => Some((&mut model_space, v.common.owner_handle)),
-            SelectionPayload::MLine(v) => Some((&mut model_space, v.common.owner_handle)),
-            SelectionPayload::MLineStyle(v) if !v.owner.is_null() => {
-                Some((&mut style_dictionary, v.owner))
-            }
-            _ => None,
-        };
-        if let Some((shared, handle)) = owner {
-            if *shared.get_or_insert(handle) != handle {
+        if let SelectionPayload::MLineStyle(v) = &r.payload {
+            if !v.owner.is_null() && *style_dictionary.get_or_insert(v.owner) != v.owner {
                 return Err(at(
                     format!("/records/{i}/payload"),
                     "conflicting contextual owner",
@@ -211,15 +207,7 @@ pub(super) fn selection(s: &DocumentSelection) -> Result<()> {
             }
         }
     }
-    let owners = [model_space, style_dictionary];
-    if (model_space.is_some() && model_space == style_dictionary)
-        || owners.iter().flatten().any(|h| identities.contains(h))
-    {
-        return Err(at(
-            "/records".into(),
-            "contextual owner collides with a record identity",
-        ));
-    }
+    let owners = contextual_owners(s, version, &identities, style_dictionary)?;
     let mut roots = BTreeSet::new();
     for (i, &key) in s.roots.iter().enumerate() {
         if key.kind != SelectionRecordKind::Entity
@@ -267,7 +255,7 @@ pub(super) fn selection(s: &DocumentSelection) -> Result<()> {
         {
             if Some(k.kind) != kind
                 || k.handle.is_null()
-                || owners.contains(&Some(k.handle))
+                || owners.contains(&k.handle)
                 || req
                     .source_handle
                     .is_some_and(|h| !h.is_null() && h != k.handle)
@@ -299,7 +287,10 @@ pub(super) fn selection(s: &DocumentSelection) -> Result<()> {
         }
     }
     for (i, handle) in missing {
-        if identities.contains(&handle) || external.contains_key(&handle) {
+        if identities.contains(&handle)
+            || external.contains_key(&handle)
+            || (version == frame::Version::V2 && owners.contains(&handle))
+        {
             return Err(at(
                 format!("/requirements/{i}"),
                 "missing endpoint is a known record",
@@ -331,6 +322,55 @@ pub(super) fn selection(s: &DocumentSelection) -> Result<()> {
         ));
     }
     evidence(s, &records, &slots)
+}
+
+fn contextual_owners(
+    s: &DocumentSelection,
+    version: frame::Version,
+    identities: &BTreeSet<Handle>,
+    style_dictionary: Option<Handle>,
+) -> Result<BTreeSet<Handle>> {
+    let mut handles = BTreeMap::new();
+    let mut names = BTreeMap::new();
+    for (i, req) in s
+        .requirements
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.slot == SelectionSlot::Owner)
+    {
+        let fail = |message| at(format!("/requirements/{i}"), message);
+        let Some(handle) = req.source_handle.filter(|h| !h.is_null()) else {
+            return Err(fail("layout owner must have an identity"));
+        };
+        if version == frame::Version::V1
+            && req.disposition == RequirementDisposition::Context(ContextRole::PaperSpace)
+        {
+            return Err(fail("PaperSpace owner requires selection storage V2"));
+        }
+        let name = req
+            .source_name
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if handles
+            .insert(handle, name.clone())
+            .is_some_and(|previous| previous != name)
+            || names
+                .insert(name, handle)
+                .is_some_and(|previous| previous != handle)
+        {
+            return Err(fail("conflicting contextual layout identity"));
+        }
+    }
+    if style_dictionary.is_some_and(|h| handles.contains_key(&h) || identities.contains(&h))
+        || handles.keys().any(|h| identities.contains(h))
+    {
+        return Err(at(
+            "/records".into(),
+            "contextual owner collides with a record identity",
+        ));
+    }
+    Ok(handles.into_keys().chain(style_dictionary).collect())
 }
 
 fn evidence(

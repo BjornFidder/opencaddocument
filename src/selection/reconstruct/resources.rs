@@ -60,7 +60,7 @@ pub(super) struct Resource {
 pub(super) struct Catalog<'a> {
     pub doc: &'a Document,
     index: &'a SourceIndex,
-    pub request: &'a ReconstructionRequest,
+    pub request: &'a Request<'a>,
     pub records: BTreeMap<SelectionRecordKey, &'a SelectionPayload>,
     slots: BTreeMap<SelectionRecordKey, Vec<&'a SelectionRequirement>>,
     names: NameInventory,
@@ -249,7 +249,7 @@ impl<'a> Catalog<'a> {
         selection: &'a DocumentSelection,
         doc: &'a Document,
         index: &'a SourceIndex,
-        request: &'a ReconstructionRequest,
+        request: &'a Request<'a>,
         records: BTreeMap<SelectionRecordKey, &'a SelectionPayload>,
     ) -> Self {
         let mut slots = BTreeMap::<_, Vec<_>>::new();

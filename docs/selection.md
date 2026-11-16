@@ -1,6 +1,6 @@
 # Owned document selections
 
-`selection::DocumentSelection` captures explicit ModelSpace `Line` and `MLine`
+`selection::DocumentSelection` captures explicit ModelSpace and PaperSpace `Line` and `MLine`
 roots and their supported dependencies without retaining the source `Document`.
 Enable the `selection` Cargo feature for capture and reconstruction. The API
 is a building block for preservation, clipboard transfer and selective exchange.
@@ -34,9 +34,11 @@ does not assign destination handles, mutate the source or repair its references.
 Floating-point geometry is copied without normalization, including signed zero
 and NaN payload bits. This is capture, not a drawing-validity certification.
 
-Roots are ordered, unique, non-null existing drawable identities. Owning
-ModelSpace is context, so selecting one entity does not select its siblings.
-Only ModelSpace roots are supported. Included record identities are unique;
+Roots are ordered, unique, non-null existing drawable identities. A selection
+can span ModelSpace and multiple paper layouts. Each root records its owning
+block identity as context, so selecting one entity does not select its siblings
+or copy the layout settings. A root inside a block definition remains outside
+this coverage. Included record identities are unique;
 every incoming reference slot remains separate. For example, two MLINE roots
 sharing a layer and a style produce one layer and one style record, but two
 root-layer requirements and two root-style requirements. Style elements retain
@@ -51,7 +53,7 @@ slot, the original/effective source handle and name, and one disposition:
 - `Included(key)`: its typed payload is in `records()`.
 - `External(key)`: an existing dependency was deliberately left to the caller.
 - `Missing`: the source reference cannot be resolved in its supported role.
-- `Context(role)`: ModelSpace ownership, style-dictionary registration or the
+- `Context(role)`: ModelSpace or PaperSpace ownership, style-dictionary registration or the
   ByLayer/ByBlock inheritance role; no complete owner/dictionary is captured.
 
 To leave a layer external, put its `SelectionRecordKey` in

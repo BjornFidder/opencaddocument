@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::objects::{Dictionary, ObjectType, SortEntitiesTable};
 
 use super::super::references::SourceIndex;
-use super::{construction, Document, Handle, ReconstructionError, SelectionDrawOrder};
+use super::{construction, Destination, Document, Handle, ReconstructionError, SelectionDrawOrder};
 
 pub(super) struct Order {
     owner: Handle,
@@ -21,25 +21,28 @@ fn unsafe_target(message: &str) -> ReconstructionError {
 impl Order {
     pub(super) fn read(
         doc: &Document,
-        owner: Handle,
+        destination: Destination,
         index: &SourceIndex,
     ) -> Result<Self, ReconstructionError> {
-        let block = doc
-            .block_records
-            .get("*Model_Space")
-            .filter(|b| {
+        let block = match destination {
+            Destination::ModelSpace(owner) => doc.block_records.get("*Model_Space").filter(|b| {
                 !owner.is_null()
                     && b.handle == owner
                     && doc.header.model_space_block_handle == owner
-            })
-            .ok_or_else(|| unsafe_target("inconsistent ModelSpace identity"))?;
+            }),
+            Destination::PaperSpace(layout) => {
+                super::super::layout::paper_block(doc, index, layout)
+            }
+        }
+        .ok_or_else(|| unsafe_target("inconsistent target layout identity"))?;
+        let owner = block.handle;
         if index.counts.get(&owner) != Some(&1) || index.inconsistent.contains(&owner) {
-            return Err(unsafe_target("ambiguous ModelSpace identity"));
+            return Err(unsafe_target("ambiguous target layout identity"));
         }
         let mut members = block.entity_handles.clone();
         let member_keys: BTreeSet<_> = members.iter().copied().collect();
         if member_keys.len() != members.len() || member_keys.contains(&Handle::NULL) {
-            return Err(unsafe_target("duplicate or null ModelSpace member"));
+            return Err(unsafe_target("duplicate or null layout member"));
         }
         let flat: Vec<_> = doc
             .entities()
@@ -67,7 +70,7 @@ impl Order {
                     .is_none_or(|owners| owners.as_slice() != [owner])
             })
         {
-            return Err(unsafe_target("inconsistent live ModelSpace membership"));
+            return Err(unsafe_target("inconsistent live layout membership"));
         }
         let dictionaries: Vec<_> = doc
             .objects
@@ -90,12 +93,12 @@ impl Order {
                     return Err(unsafe_target("duplicate ACAD_SORTENTS registration"));
                 }
             }
-            _ => return Err(unsafe_target("ambiguous ModelSpace extension dictionary")),
+            _ => return Err(unsafe_target("ambiguous layout extension dictionary")),
         }
         for (key, object) in &doc.objects {
             if let ObjectType::SortEntitiesTable(v) = object {
                 if v.block_owner_handle == owner && Some(*key) != table {
-                    return Err(unsafe_target("unregistered ModelSpace SortEnts table"));
+                    return Err(unsafe_target("unregistered layout SortEnts table"));
                 }
             }
         }
@@ -114,7 +117,7 @@ impl Order {
             }
             if v.entries().any(|e| !member_keys.contains(&e.entity_handle)) {
                 return Err(unsafe_target(
-                    "SortEnts entry outside current ModelSpace membership",
+                    "SortEnts entry outside current layout membership",
                 ));
             }
             members.sort_by_key(|&h| v.effective_sort_handle(h).value());
@@ -131,7 +134,7 @@ impl Order {
                 .copied()
                 .eq(members.iter().copied().filter(|h| live.contains(h)))
             {
-                return Err(unsafe_target("flat and block ModelSpace order disagree"));
+                return Err(unsafe_target("flat and block layout order disagree"));
             }
         }
         Ok(Self {
@@ -142,6 +145,10 @@ impl Order {
             table,
             natural,
         })
+    }
+
+    pub(super) fn owner(&self) -> Handle {
+        self.owner
     }
 
     pub(super) fn has_anchor(&self, h: Handle) -> bool {
@@ -184,7 +191,7 @@ impl Order {
                 doc.objects.insert(h, ObjectType::Dictionary(d));
                 if doc.extension_dictionary_handle(self.owner) != Some(h) {
                     return Err(construction(
-                        "extension dictionary is not registered for ModelSpace",
+                        "extension dictionary is not registered for the target layout",
                     ));
                 }
                 h
@@ -197,7 +204,7 @@ impl Order {
                     .next()
                     .ok_or_else(|| construction("missing SortEnts handle"))?;
                 let Some(ObjectType::Dictionary(dict)) = doc.objects.get_mut(&dictionary) else {
-                    return Err(construction("missing ModelSpace extension dictionary"));
+                    return Err(construction("missing layout extension dictionary"));
                 };
                 dict.add_entry(SortEntitiesTable::DICTIONARY_KEY, h);
                 h
