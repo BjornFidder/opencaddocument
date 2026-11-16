@@ -91,6 +91,10 @@ fn resource_kind(
                 (Context(ContextRole::PaperSpace), Some(name)) => {
                     super::super::layout::paper_block_name(name) && c.entity_mode == Some(0)
                 }
+                (Context(ContextRole::BlockDefinition), Some(name)) => {
+                    super::super::block_definition::is_definition_name(name)
+                        && c.entity_mode == Some(0)
+                }
                 _ => false,
             };
             return if !c.owner_handle.is_null()
@@ -99,7 +103,7 @@ fn resource_kind(
             {
                 Ok(None)
             } else {
-                Err("inconsistent layout owner requirement")
+                Err("inconsistent block owner requirement")
             };
         }
         (StyleRegistration, SelectionPayload::MLineStyle(v), _) => {
@@ -289,7 +293,7 @@ pub(super) fn selection(s: &DocumentSelection, version: frame::Version) -> Resul
     for (i, handle) in missing {
         if identities.contains(&handle)
             || external.contains_key(&handle)
-            || (version == frame::Version::V2 && owners.contains(&handle))
+            || (version >= frame::Version::V2 && owners.contains(&handle))
         {
             return Err(at(
                 format!("/requirements/{i}"),
@@ -340,18 +344,18 @@ fn contextual_owners(
     {
         let fail = |message| at(format!("/requirements/{i}"), message);
         let Some(handle) = req.source_handle.filter(|h| !h.is_null()) else {
-            return Err(fail("layout owner must have an identity"));
+            return Err(fail("block owner must have an identity"));
         };
-        if version == frame::Version::V1
-            && req.disposition == RequirementDisposition::Context(ContextRole::PaperSpace)
-        {
-            return Err(fail("PaperSpace owner requires selection storage V2"));
+        if let RequirementDisposition::Context(role) = req.disposition {
+            if version < frame::Version::for_role(role) {
+                return Err(fail("owner role requires a later storage version"));
+            }
         }
         let name = req
             .source_name
             .as_deref()
             .unwrap_or_default()
-            .to_ascii_lowercase();
+            .to_uppercase();
         if handles
             .insert(handle, name.clone())
             .is_some_and(|previous| previous != name)
@@ -359,7 +363,7 @@ fn contextual_owners(
                 .insert(name, handle)
                 .is_some_and(|previous| previous != handle)
         {
-            return Err(fail("conflicting contextual layout identity"));
+            return Err(fail("conflicting contextual owner identity"));
         }
     }
     if style_dictionary.is_some_and(|h| handles.contains_key(&h) || identities.contains(&h))

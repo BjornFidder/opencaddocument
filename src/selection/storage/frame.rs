@@ -1,4 +1,5 @@
 use super::{SelectionStorageError, SelectionStorageErrorKind as Kind};
+use crate::selection::ContextRole;
 use std::io::{self, Write};
 
 const MAGIC: &[u8; 8] = b"OCADSEL\0";
@@ -11,11 +12,22 @@ const DEPTH_LIMIT: usize = 16;
 
 type Result<T> = std::result::Result<T, SelectionStorageError>;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u16)]
 pub(super) enum Version {
     V1 = 1,
     V2 = 2,
+    V3 = 3,
+}
+
+impl Version {
+    pub(super) fn for_role(role: ContextRole) -> Self {
+        match role {
+            ContextRole::PaperSpace => Self::V2,
+            ContextRole::BlockDefinition => Self::V3,
+            _ => Self::V1,
+        }
+    }
 }
 
 fn error(kind: Kind, offset: usize, message: &str) -> SelectionStorageError {
@@ -41,6 +53,7 @@ pub(super) fn body(bytes: &[u8]) -> Result<(Version, &[u8])> {
     let version = match bytes[8..10] {
         [0, 1] => Version::V1,
         [0, 2] => Version::V2,
+        [0, 3] => Version::V3,
         _ => {
             return Err(error(
                 Kind::UnsupportedVersion,

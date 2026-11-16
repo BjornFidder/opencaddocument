@@ -117,7 +117,7 @@ text_enum!(RecordKind(SelectionRecordKind) {
     "entity" => Entity, "layer" => Layer, "linetype" => LineType, "object" => Object,
 });
 text_enum!(Role(ContextRole) {
-    "model_space" => ModelSpace, "paper_space" => PaperSpace,
+    "model_space" => ModelSpace, "paper_space" => PaperSpace, "block_definition" => BlockDefinition,
     "mline_style_dictionary" => MLineStyleDictionary,
     "by_layer" => ByLayer, "by_block" => ByBlock,
 });

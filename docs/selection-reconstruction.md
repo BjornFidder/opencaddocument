@@ -97,6 +97,20 @@ bindings can reuse a style or layer created by an earlier call. Mixed source
 layouts in one request are invalid. A draw-order anchor from another layout
 blocks that root.
 
+## Local block definitions
+
+Use `DocumentSelection::reconstruct_in_block_definition` and pass an existing
+local block record handle in `BlockDefinitionReconstructionRequest`. All
+requested roots must have the same source block definition. This also works
+when `INSERT`s reference the definition from another block. Placement is in
+definition coordinates. All instances that reference the resulting definition
+see the change through their existing transforms. The caller keeps control
+over the destination definition, its base point and how it is referenced.
+
+Use an order anchor from the destination definition. Bind compatible existing
+resources where the target has `INSERT`s. The current resource name inventory
+cannot qualify `INSERT`s for creating new resources.
+
 ## Geometry and draw order
 
 `Identity` retains captured
@@ -108,11 +122,11 @@ units. Invalid geometry, unsupported references and stale anchors produce
 located root blockers.
 
 Append uses the natural order when the target stores agree. Insertion before
-a live entity in the destination layout uses its current effective order. Rebuilding the
+a live entity in the destination block uses its current effective order. Rebuilding the
 typed SortEnts order covers existing fallback ranks as well as new entities
 so that DXF rank renumbering retains the relative order. DWG and DXF readback
 tests exercise a populated ModelSpace target with sparse existing SortEnts and
-ordered inserts into two paper layouts. The allocator
+ordered inserts into two paper layouts and a nested local definition. The allocator
 refuses a target containing unqualified raw DXF sort codes. That error leaves
 the original data intact.
 
