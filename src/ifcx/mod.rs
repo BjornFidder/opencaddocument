@@ -51,6 +51,7 @@ mod layout;
 mod leader;
 mod leader_graphics;
 mod multi_leader;
+mod plot_styles;
 mod spline;
 pub use spline::SplineExchangeTarget;
 mod table;
@@ -76,7 +77,7 @@ const TEMPLATE: &str = r#"{
     "author": "OpenCAD",
     "timestamp": "1970-01-01T00:00:00Z"
   },
-  "imports": [{ "uri": "urn:example:ifccad:0.10.0" }],
+  "imports": [{ "uri": "urn:example:ifccad:0.11.0" }],
   "schemas": {},
   "data": [
     {
@@ -95,7 +96,7 @@ const TEMPLATE: &str = r#"{
           "nextLayoutId": 2,
           "nextLinePatternId": 1,
           "nextSymbolSourceId": 1,
-          "profileVersion": "0.10.0",
+          "profileVersion": "0.11.0",
           "nextUcsId": 1,
           "nextModelWindowId": 1
         }
@@ -203,6 +204,20 @@ impl Format for Ifcx {
 }
 
 impl Ifcx {
+    /// Check whether the bound external plot tables can share one CAD delivery.
+    /// DXF and DWG identify these tables by file name alone.
+    pub fn validate_cad_plot_style_bindings(&self, drawing: &IfccadDocument) -> Result<(), Error> {
+        plot_styles::validate_cad_bindings(drawing)
+    }
+
+    /// Check existing CAD layouts carrying IFCCAD plot-source metadata.
+    pub fn validate_cad_plot_style_sources<'a>(
+        &self,
+        layouts: impl IntoIterator<Item = (&'a str, &'a ifccad::IfccadPlotStyleSource)>,
+    ) -> Result<(), Error> {
+        plot_styles::validate_cad_sources(layouts)
+    }
+
     /// Convert a logical IFCCAD drawing into a [`Document`] without a JSON bridge.
     ///
     /// Validates `drawing` before mapping it. Uses the same mapping, rounding and
@@ -421,6 +436,7 @@ impl Ifcx {
             context,
             &sheets,
         )?;
+        plot_styles::assignments_in(drawing, &mut document, &names, &handles, &mut losses)?;
         Ok(IfccadImportOutcome {
             document,
             losses: losses.into_vec(),
@@ -607,6 +623,7 @@ impl Ifcx {
         if let Some(context) = context.as_deref() {
             context.emit(&mut writer)?;
         }
+        plot_styles::assignments_out(&mut writer);
         ifccad::validate_ifccad_document(&writer.drawing)?;
         #[cfg(feature = "mline-pilot")]
         let saved = context
@@ -778,7 +795,7 @@ fn add_in(
     let cad_color = converted.common().color;
     let handle = document.add_entity(converted)?;
     if let IfccadMode::Explicit(color) = &entity.appearance.color {
-        note_aci_fallback(
+        note_indexed_color_loss(
             losses,
             color,
             cad_color,
@@ -935,12 +952,6 @@ impl Writer<'_> {
         }
         annotation_dimension::export_entity(self, entity, &mut kind)?;
         let common = entity.common();
-        note_entity_plot_style_loss(
-            self.document,
-            &mut self.losses,
-            common,
-            format_args!("{}", entity.as_entity().entity_type()),
-        );
         let layer_id = match self.layers.get(&common.layer.to_ascii_lowercase()) {
             Some(id) => *id,
             None => self.layers.get("0").copied().unwrap_or(0),
@@ -1850,9 +1861,7 @@ fn color_in(color: &IfccadColor) -> Color {
             let [r, g, b] = *rgb;
             match indexed {
                 Some((system, index))
-                    if system.eq_ignore_ascii_case("ACI")
-                        && (1..=255).contains(index)
-                        && Color::Index(*index as u8).rgb() == Some((r, g, b)) =>
+                    if system.eq_ignore_ascii_case("ACI") && (1..=255).contains(index) =>
                 {
                     Color::Index(*index as u8)
                 }
@@ -1862,20 +1871,28 @@ fn color_in(color: &IfccadColor) -> Color {
     }
 }
 
-fn note_aci_fallback(
+fn note_indexed_color_loss(
     losses: &mut Losses,
     source: &IfccadColor,
     converted: Color,
     handle: Handle,
     location: std::fmt::Arguments<'_>,
 ) {
-    if let (Some((system, index)), Color::Rgb { .. }) = (source.indexed_identity(), converted) {
-        if system.eq_ignore_ascii_case("ACI") && (1..=255).contains(index) {
+    let Some((system, index)) = source.indexed_identity() else {
+        return;
+    };
+    match converted {
+        Color::Index(aci) if converted.rgb().map(|(r, g, b)| [r, g, b]) != source.concrete_rgb() => {
             losses.located_loss(
                 handle,
-                format!("{location}: ACI {index} omitted because the stored RGB differs from the CAD palette. Exported as True Color."),
+                format!("{location}: RGB fallback for ACI {aci} omitted because CAD stores the index and uses its palette RGB."),
             );
         }
+        Color::Rgb { .. } => losses.located_loss(
+            handle,
+            format!("{location}: indexed color {system:?} {index} is unavailable in CAD. Exported as True Color."),
+        ),
+        _ => {}
     }
 }
 

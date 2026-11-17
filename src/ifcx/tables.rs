@@ -159,7 +159,7 @@ pub(super) fn read(
                 handle
             }
         };
-        note_aci_fallback(
+        note_indexed_color_loss(
             losses,
             &layer.appearance.color,
             cad_color,
@@ -377,20 +377,6 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
     }
 
     for layer in document.layers.iter() {
-        // The DXF writer fills an absent layer assignment with the default Normal entry.
-        let style = layer.plotstyle_handle;
-        if !style.is_null()
-            && !plot_style_name(document, style)
-                .is_some_and(|name| name.eq_ignore_ascii_case("Normal"))
-        {
-            note_plot_style_loss(
-                document,
-                &mut writer.losses,
-                style,
-                layer.handle,
-                format_args!("layer {:?}", layer.name),
-            );
-        }
         let line_pattern = match writer
             .line_patterns
             .get(&layer.line_type.to_ascii_lowercase())

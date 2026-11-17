@@ -333,7 +333,7 @@ pub(super) fn children_in(
             .ok_or_else(|| annotation::invalid("attribute layer unavailable"))?;
         appearance_in(&a.appearance, names, &mut v.common, losses);
         if let IfccadMode::Explicit(color) = &a.appearance.color {
-            note_aci_fallback(
+            note_indexed_color_loss(
                 losses,
                 color,
                 v.common.color,

@@ -286,6 +286,7 @@ fn resources(d: &IfccadDocument) -> IfccadDocument {
         dimension_styles: d.dimension_styles.clone(),
         multi_leader_styles: d.multi_leader_styles.clone(),
         symbol_sources: d.symbol_sources.clone(),
+        plot_styles: Default::default(),
         point_display: d.point_display,
         text_styles: d.text_styles.clone(),
         annotation_views: vec![],

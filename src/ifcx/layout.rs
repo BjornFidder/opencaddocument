@@ -50,6 +50,8 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
     let mut tab_index = 0;
     for layout in layouts {
         if layout.block_record == model_record {
+            let id = writer.drawing.model.id;
+            plot_styles::source_out(writer, layout, id);
             writer.drawing.model.settings = settings_out(layout, true, &mut writer.losses);
             continue;
         }
@@ -70,6 +72,7 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
             Some(id) => id,
             None => writer.drawing.id_counters.allocate_layout_id()?,
         };
+        plot_styles::source_out(writer, layout, id);
         writer.layout_ids.insert(layout.handle, id);
         let overall = overall_viewport(document, layout);
         let mut canvas = None;
@@ -588,6 +591,7 @@ pub(super) fn read(
     if let Some(model) = layout_handle(document, document.header.model_space_block_handle) {
         if let Some(ObjectType::Layout(layout)) = document.objects.get_mut(&model) {
             settings_in(layout, &drawing.model.settings, losses);
+            plot_styles::source_in(drawing, drawing.model.id, layout, losses);
         }
     }
     let mut papers: Vec<&IfccadPaperLayout> = drawing.paper_layouts.iter().collect();
@@ -610,6 +614,7 @@ pub(super) fn read(
         };
         layout.tab_order = i16::try_from(paper.tab_index).unwrap_or(i16::MAX);
         settings_in(layout, &paper.settings, losses);
+        plot_styles::source_in(drawing, paper.id, layout, losses);
         owners.push(layout.block_record);
     }
     // Every sheet, the untouched one of a new drawing too, gets its markers
@@ -1232,7 +1237,6 @@ fn plot_out(layout: &Layout, media: &LayoutMedia, model: bool) -> Option<PlotSet
                 },
             },
             apply_plot_styles: flags.plot_plot_styles,
-            plot_style_table_name: nonempty(&layout.plot_style_sheet),
         },
         options: PlotOptions {
             plot_viewport_borders: flags.plot_viewport_borders,
@@ -1321,11 +1325,6 @@ fn plot_in(layout: &mut Layout, width: f64, height: f64, to_mm: f64, plot: &Plot
         layout.shade_plot_dpi = i16::try_from(dpi).unwrap_or(i16::MAX);
     }
     layout.plot_flags.plot_plot_styles = plot.output.apply_plot_styles;
-    layout.plot_style_sheet = plot
-        .output
-        .plot_style_table_name
-        .clone()
-        .unwrap_or_default();
     let options = plot.options;
     layout.plot_flags.plot_viewport_borders = options.plot_viewport_borders;
     layout.plot_flags.draw_viewports_first = options.plot_paper_space_last;
