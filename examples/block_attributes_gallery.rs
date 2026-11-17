@@ -409,7 +409,6 @@ pub fn gallery() -> Result<IfccadDocument, Box<dyn std::error::Error + Send + Sy
                         },
                     },
                     apply_plot_styles: false,
-                    plot_style_table_name: None,
                 },
                 options: ifccad::plot_kernel::PlotOptions {
                     plot_viewport_borders: false,
