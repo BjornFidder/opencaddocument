@@ -1,7 +1,7 @@
 #![cfg(feature = "ifcx")]
 
 use ifccad::geometry_kernel::hatch::{HatchBoundary2, HatchDash, HatchEdge2, HatchFill};
-use ifccad::plot_kernel::{MediaUnit, PlotPlacement};
+use ifccad::plot_kernel::{MediaUnit, PlotOffsetReference, PlotPlacement, PlotRotation, PlotUnit};
 use ifccad::text::{MTextInline, TextLayout, TextLineSpacing};
 use ifccad::*;
 use opencaddocument::entities::hatch::{
@@ -347,4 +347,71 @@ fn plot_origin_division_does_not_drop_mantissa_bits() {
         panic!()
     };
     assert_eq!([x, y].map(f64::to_bits), expected.map(f64::to_bits));
+}
+
+#[test]
+fn layout_plot_offsets_are_stored_from_the_rotated_printable_corner() {
+    let mut source = strict(include_bytes!("fixtures/layout-plot-inch.ifcx"));
+    let settings = &mut source.paper_layouts[0].settings;
+    let media = settings.media.as_mut().unwrap();
+    media.width = 297.0;
+    media.height = 210.0;
+    for (rotation, reference, expected) in [
+        (PlotRotation::None, PlotOffsetReference::Media, [7.0, -10.0]),
+        (
+            PlotRotation::CounterClockwise90,
+            PlotOffsetReference::Media,
+            [-1.0, -8.0],
+        ),
+        (
+            PlotRotation::CounterClockwise90,
+            PlotOffsetReference::PrintableArea,
+            [12.0, -3.0],
+        ),
+    ] {
+        let plot = source.paper_layouts[0]
+            .settings
+            .plot_settings
+            .as_mut()
+            .unwrap();
+        plot.plot_unit = PlotUnit::Millimetre;
+        plot.page.rotation = rotation;
+        plot.page.printable_area.min_x = 5.0;
+        plot.page.printable_area.min_y = 7.0;
+        plot.page.printable_area.max_x = 286.0;
+        plot.page.printable_area.max_y = 197.0;
+        plot.mapping.placement = PlotPlacement::Offset {
+            reference,
+            x: 12.0,
+            y: -3.0,
+        };
+
+        let bytes = encode_ifccad_document(&source).unwrap();
+        let (cad, _) = Ifcx.read(bytes.bytes()).unwrap();
+        let sheet = cad
+            .objects
+            .values()
+            .find_map(|object| match object {
+                opencaddocument::objects::ObjectType::Layout(layout) if layout.name == "Sheet" => {
+                    Some(layout)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!([sheet.plot_origin_x, sheet.plot_origin_y], expected);
+        assert_eq!(
+            native(&cad).paper_layouts[0]
+                .settings
+                .plot_settings
+                .as_ref()
+                .unwrap()
+                .mapping
+                .placement,
+            PlotPlacement::Offset {
+                reference: PlotOffsetReference::PrintableArea,
+                x: expected[0],
+                y: expected[1],
+            }
+        );
+    }
 }

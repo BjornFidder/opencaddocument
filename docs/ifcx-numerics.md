@@ -49,6 +49,17 @@ It introduces no runtime accuracy guarantee or general overflow repair. A +Z
 local dimension can live inside an obliquely placed ordinary block; the picture
 profile does not gain tilted dimension planes or new entity families.
 
+## Layout plot offsets
+
+For a Layout plot, Document writes the CAD plot origin in millimetres from
+the printable corner, the default CAD `PLOTOFFSET=0` convention. It converts
+a native `Media` offset to that origin using the left and bottom margins
+after page rotation. Numeric offsets may be negative. The conversion reports
+the reference change when it moves the origin. CAD readback represents these
+offsets as `PrintableArea`. The native anchor spelling is only available in
+the original IFCX. A CAD host with a different `PLOTOFFSET` preference can
+interpret the same numeric offsets differently.
+
 ## Regression evidence and limits
 
 `tests/ifcx_placement_3d.rs` checks native-first and CAD-first source geometry
