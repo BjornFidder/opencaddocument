@@ -1152,7 +1152,7 @@ fn settings_in(layout: &mut Layout, settings: &IfccadLayoutSettings, losses: &mu
     layout.paper_width = media.width * to_mm;
     layout.paper_height = media.height * to_mm;
     if let Some(plot) = &settings.plot_settings {
-        plot_in(layout, media.width, media.height, to_mm, plot);
+        plot_in(layout, media.width, media.height, to_mm, plot, losses);
     }
 }
 
@@ -1185,7 +1185,11 @@ fn plot_out(layout: &Layout, media: &LayoutMedia, model: bool) -> Option<PlotSet
     let placement = match layout.plot_flags.plot_centered {
         true => PlotPlacement::Centered,
         false => PlotPlacement::Offset {
-            reference: PlotOffsetReference::Media,
+            reference: if area == PlotArea::Layout {
+                PlotOffsetReference::PrintableArea
+            } else {
+                PlotOffsetReference::Media
+            },
             x: layout.plot_origin_x / output_mm,
             y: layout.plot_origin_y / output_mm,
         },
@@ -1249,7 +1253,14 @@ fn plot_out(layout: &Layout, media: &LayoutMedia, model: bool) -> Option<PlotSet
     })
 }
 
-fn plot_in(layout: &mut Layout, width: f64, height: f64, to_mm: f64, plot: &PlotSettings) {
+fn plot_in(
+    layout: &mut Layout,
+    width: f64,
+    height: f64,
+    to_mm: f64,
+    plot: &PlotSettings,
+    losses: &mut Losses,
+) {
     let output_mm = match plot.plot_unit {
         PlotUnit::Inch => 25.4,
         _ => 1.0,
@@ -1302,9 +1313,46 @@ fn plot_in(layout: &mut Layout, width: f64, height: f64, to_mm: f64, plot: &Plot
         }
     }
     layout.plot_flags.plot_centered = plot.mapping.placement == PlotPlacement::Centered;
-    if let PlotPlacement::Offset { x, y, .. } = plot.mapping.placement {
-        layout.plot_origin_x = x * output_mm;
-        layout.plot_origin_y = y * output_mm;
+    if let PlotPlacement::Offset { reference, x, y } = plot.mapping.placement {
+        // Layout uses the CAD printable-origin convention (PLOTOFFSET=0).
+        // Stored margins describe the medium before rotation.
+        let (left, bottom) = if plot.area == PlotArea::Layout
+            && reference == PlotOffsetReference::Media
+        {
+            match page.rotation {
+                PlotRotation::None => (layout.plot_margin_left, layout.plot_margin_bottom),
+                PlotRotation::CounterClockwise90 => {
+                    (layout.plot_margin_top, layout.plot_margin_left)
+                }
+                PlotRotation::UpsideDown => (layout.plot_margin_right, layout.plot_margin_top),
+                PlotRotation::Clockwise90 => (layout.plot_margin_bottom, layout.plot_margin_right),
+            }
+        } else {
+            (0.0, 0.0)
+        };
+        let x_mm = x * output_mm - left;
+        let y_mm = y * output_mm - bottom;
+        if x_mm.is_finite() && y_mm.is_finite() {
+            layout.plot_origin_x = x_mm;
+            layout.plot_origin_y = y_mm;
+            if left != 0.0 || bottom != 0.0 {
+                losses.retained_note(Loss {
+                    handle: Some(layout.handle),
+                    message: format!(
+                        "Layout {:?}: plot offset converted from the paper edge to the printable corner; effective placement retained",
+                        layout.name
+                    ),
+                });
+            }
+        } else {
+            losses.located_loss(
+                layout.handle,
+                format!(
+                    "Layout {:?}: plot offset exceeds the CAD millimetre range",
+                    layout.name
+                ),
+            );
+        }
     }
     let shaded = &plot.output.shaded_plot;
     layout.shade_plot_mode = match shaded.mode {
