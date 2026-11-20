@@ -132,6 +132,8 @@ pub use ifcx::dwg_external_source_content;
 #[cfg(feature = "ifcx")]
 pub use ifcx::dwg_xref_fingerprint_guid;
 #[cfg(feature = "ifcx")]
+pub use ifcx::dxf_external_source_content;
+#[cfg(feature = "ifcx")]
 pub use ifcx::validate_cad_external_sources;
 #[cfg(feature = "ifcx")]
 pub use ifcx::{external_source_location_from_cad_path, external_source_location_to_cad_path};

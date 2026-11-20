@@ -45,12 +45,7 @@ pub(super) fn diagnose_dependency_losses(writer: &mut Writer<'_>) {
             .external_sources
             .iter()
             .find(|source| source.id == source_id)
-            .and_then(|source| {
-                let IfccadExternalSourceContent::Dwg {
-                    fingerprint_guid, ..
-                } = &source.source;
-                fingerprint_guid.as_deref()
-            });
+            .and_then(|source| source.source.fingerprint_guid());
         if dependency
             .fingerprint_guid
             .as_deref()
@@ -132,19 +127,14 @@ pub(super) fn sources_in(
                 }
             }
         };
-        let IfccadExternalSourceContent::Dwg {
-            base_point,
-            insertion_unit,
-            fingerprint_guid,
-        } = &source.source;
         let mut record = BlockRecord::new(source.name.clone());
         record.handle = document.allocate_handle();
         record.block_entity_handle = document.allocate_handle();
         record.block_end_handle = document.allocate_handle();
         record.flags.is_xref = true;
         record.xref_path = path.clone();
-        record.base_point = vector(*base_point);
-        record.units = insertion_unit.as_deref().map(unit_code).unwrap_or(0);
+        record.base_point = vector(source.source.base_point());
+        record.units = source.source.insertion_unit().map(unit_code).unwrap_or(0);
         let mut block = Block::new(record.name.clone(), record.base_point);
         block.common.handle = record.block_entity_handle;
         block.common.owner_handle = record.handle;
@@ -157,7 +147,7 @@ pub(super) fn sources_in(
         document.block_records.add(record)?;
         document.add_entity(EntityType::Block(block))?;
         document.add_entity(EntityType::BlockEnd(end))?;
-        if let Some(guid) = fingerprint_guid {
+        if let Some(guid) = source.source.fingerprint_guid() {
             document
                 .file_dependencies
                 .push(acadrust::document::FileDependency {
@@ -224,13 +214,6 @@ impl Writer<'_> {
             source.name = record.name.clone();
             source
         } else {
-            if record.xref_path.to_ascii_lowercase().ends_with(".dxf") {
-                self.losses.note(format!(
-                    "XREF {} uses a DXF source outside the first DWG attachment slice",
-                    record.name
-                ));
-                return Ok(None);
-            }
             let location =
                 match external_sources::external_source_location_from_cad_path(&record.xref_path) {
                     Ok(v) => v,
@@ -246,10 +229,18 @@ impl Writer<'_> {
                 id: self.drawing.id_counters.allocate_external_source_id()?,
                 name: record.name.clone(),
                 location,
-                source: IfccadExternalSourceContent::Dwg {
-                    base_point: array(record.base_point),
-                    insertion_unit: (record.units != 0).then(|| unit_name(record.units)),
-                    fingerprint_guid,
+                source: if record.xref_path.to_ascii_lowercase().ends_with(".dxf") {
+                    IfccadExternalSourceContent::Dxf {
+                        base_point: array(record.base_point),
+                        insertion_unit: (record.units != 0).then(|| unit_name(record.units)),
+                        fingerprint_guid,
+                    }
+                } else {
+                    IfccadExternalSourceContent::Dwg {
+                        base_point: array(record.base_point),
+                        insertion_unit: (record.units != 0).then(|| unit_name(record.units)),
+                        fingerprint_guid,
+                    }
                 },
             }
         };

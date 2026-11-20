@@ -161,7 +161,10 @@ fn main() -> std::result::Result<(), Error> {
         assert_eq!(back.drawing.external_sources.len(), 1);
         let IfccadExternalSourceContent::Dwg {
             fingerprint_guid, ..
-        } = &back.drawing.external_sources[0].source;
+        } = &back.drawing.external_sources[0].source
+        else {
+            return Err("Expected a DWG source in the first-slice review project".into());
+        };
         assert_eq!(fingerprint_guid.is_some(), guid);
         std::fs::write(drawings.join(name), bytes)?;
     }

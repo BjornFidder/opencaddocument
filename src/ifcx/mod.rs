@@ -48,8 +48,9 @@ mod dimension_kinds;
 mod external_sources;
 mod xref;
 pub use external_sources::{
-    dwg_external_source_content, dwg_xref_fingerprint_guid, external_source_location_from_cad_path,
-    external_source_location_to_cad_path, validate_cad_external_sources,
+    dwg_external_source_content, dwg_xref_fingerprint_guid, dxf_external_source_content,
+    external_source_location_from_cad_path, external_source_location_to_cad_path,
+    validate_cad_external_sources,
 };
 mod font;
 mod hatch;
@@ -235,6 +236,17 @@ impl Ifcx {
     ///
     /// Returns an error if IFCCAD validation or CAD document construction fails.
     pub fn import_ifccad(&self, drawing: &IfccadDocument) -> Result<IfccadImportOutcome, Error> {
+        if let Some(source) = drawing
+            .external_sources
+            .iter()
+            .find(|source| source.source.format() != ifccad::IfccadExternalSourceFormat::Dwg)
+        {
+            return Err(format!(
+                "XREF {}: convert the external source to DWG before CAD export",
+                source.name
+            )
+            .into());
+        }
         self.import_ifccad_inner(
             drawing,
             #[cfg(feature = "mline-pilot")]
