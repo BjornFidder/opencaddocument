@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "acadrust"
 version = "0.6.8"
-source = "git+https://github.com/hakanaktt/acadrust.git?rev=e862f9916d118cc2d7a4b16c9892cf3cbed8d342#e862f9916d118cc2d7a4b16c9892cf3cbed8d342"
+source = "git+https://github.com/hakanaktt/acadrust.git?rev=0fb746f5e8e7472413822c2d023226c56b446ce2#0fb746f5e8e7472413822c2d023226c56b446ce2"
 dependencies = [
  "anyhow",
  "bitflags",
@@ -25,6 +25,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "web-time",
+ "whichever",
 ]
 
 [[package]]
@@ -1239,6 +1240,26 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "whichever"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68887c9512981e597d730f1d95b2eb6abdd53385e4e76c35a95e7121e16232b0"
+dependencies = [
+ "whichever-macros",
+]
+
+[[package]]
+name = "whichever-macros"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb15ad553239d9fdefac12e31e16c7682dc62a2106ba035aec69c5dd15835a7b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]
