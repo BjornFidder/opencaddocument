@@ -52,6 +52,8 @@ impl Format for Dwg {
     }
 
     fn write(&self, document: &Document) -> Result<(Vec<u8>, Vec<Loss>), Error> {
+        #[cfg(feature = "ifcx")]
+        crate::validate_cad_external_sources(document)?;
         Ok((DwgWriter::write_to_vec(document)?, Vec::new()))
     }
 }
@@ -74,6 +76,8 @@ impl Format for Dxf {
     }
 
     fn write(&self, document: &Document) -> Result<(Vec<u8>, Vec<Loss>), Error> {
+        #[cfg(feature = "ifcx")]
+        crate::validate_cad_external_sources(document)?;
         Ok((DxfWriter::new(document).write_to_vec()?, Vec::new()))
     }
 }

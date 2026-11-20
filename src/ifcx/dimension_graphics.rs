@@ -278,6 +278,7 @@ fn canonical(
 /// Resource-only conversion context: never clone the drawing's entity graph.
 fn resources(d: &IfccadDocument) -> IfccadDocument {
     IfccadDocument {
+        external_sources: Vec::new(),
         table_styles: Vec::new(),
         table_data_links: Vec::new(),
         data_tables: Vec::new(),
@@ -319,6 +320,7 @@ fn resources(d: &IfccadDocument) -> IfccadDocument {
 }
 fn context<'a>(document: &'a Document, drawing: &IfccadDocument) -> Writer<'a> {
     Writer {
+        external_sources: HashMap::new(),
         #[cfg(feature = "mline-pilot")]
         roundtrip: None,
         table_data_links: HashMap::new(),

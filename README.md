@@ -20,6 +20,9 @@ With the `ifcx` feature, the `Ifcx` format reads and writes IFCX through
 [ifccad](https://github.com/OpenAEC-Foundation/ifccad):
 - ifccad only reads and writes the files; the mapping to `Document` lives here,
   so neither library depends on the other.
+- The XREF development mapping pairs with profile 0.12.0 / CBOR 12. It retains
+  external DWG sources and Model attachments, with URI/search locations and
+  optional FileDepList identity. See [XREF scope and evidence](docs/ifcx-xrefs.md).
 - The IFCX mapping covers layers, line patterns with their
   SHX and text symbols, text styles, dimension styles, UCSs, the point
   display, block definitions, paper layouts with their sheet and plot
