@@ -16,6 +16,8 @@ use std::collections::{BTreeMap, HashMap};
 /// CAD handles inside it refer to that session and are rebuilt on reopen.
 #[derive(Clone, Debug)]
 pub struct IfccadRoundtripContext {
+    external_source_history: HashMap<(Handle, String), ifccad::IfccadExternalSource>,
+    external_sources: HashMap<Handle, ifccad::IfccadExternalSource>,
     header_id: String,
     drawing_id: u64,
     counters: IfccadIdCounters,
@@ -149,6 +151,8 @@ fn exported_pattern(writer: &Writer<'_>, handle: Handle) -> Option<IfccadLinePat
 impl IfccadRoundtripContext {
     pub(in crate::ifcx) fn new(drawing: &IfccadDocument) -> Self {
         Self {
+            external_source_history: HashMap::new(),
+            external_sources: HashMap::new(),
             header_id: drawing.header.id.clone(),
             drawing_id: drawing.drawing_id,
             counters: drawing.id_counters,
@@ -161,6 +165,76 @@ impl IfccadRoundtripContext {
             blocks: HashMap::new(),
             patterns: HashMap::new(),
             model_id: drawing.model.id,
+        }
+    }
+
+    /// Native source metadata for this CAD block, independent of resolved bytes.
+    pub fn external_source(&self, handle: Handle) -> Option<&ifccad::IfccadExternalSource> {
+        self.external_sources.get(&handle)
+    }
+
+    /// Recover the authored source for a live CAD locator, including earlier
+    /// locator spellings retained for undo after a native save.
+    pub fn external_source_for_path(
+        &self,
+        handle: Handle,
+        path: &str,
+    ) -> Result<Option<ifccad::IfccadExternalSource>, Error> {
+        if let Some(source) = self.external_source_history.get(&(handle, path.to_owned())) {
+            return Ok(Some(source.clone()));
+        }
+        let Some(mut source) = self.external_sources.get(&handle).cloned() else {
+            return Ok(None);
+        };
+        source.location = crate::external_source_location_from_cad_path(path)?;
+        Ok(Some(source))
+    }
+
+    /// Register an explicitly attached source. Deleting/undoing its CAD block
+    /// does not lower allocation history; redo reuses the same source identity.
+    pub fn register_external_source(
+        &mut self,
+        handle: Handle,
+        name: String,
+        cad_path: String,
+        content: ifccad::IfccadExternalSourceContent,
+    ) -> Result<ifccad::IfccadExternalSourceId, Error> {
+        let existing = self.external_sources.get(&handle).map(|s| s.id);
+        let id = existing.unwrap_or(ifccad::IfccadExternalSourceId(
+            self.counters.next_external_source_id,
+        ));
+        let source = ifccad::IfccadExternalSource {
+            id,
+            name,
+            location: crate::external_source_location_from_cad_path(&cad_path)?,
+            source: content,
+        };
+        source.validate()?;
+        if existing.is_none() {
+            self.counters.allocate_external_source_id()?;
+        }
+        self.external_source_history
+            .insert((handle, cad_path), source.clone());
+        self.external_sources.insert(handle, source);
+        Ok(id)
+    }
+
+    pub(in crate::ifcx) fn remember_external_sources(
+        &mut self,
+        drawing: &IfccadDocument,
+        document: &Document,
+        names: &Names,
+    ) {
+        for source in &drawing.external_sources {
+            if let Some(record) = names
+                .external_sources
+                .get(&source.id)
+                .and_then(|name| document.block_records.get(name))
+            {
+                self.external_source_history
+                    .insert((record.handle, record.xref_path.clone()), source.clone());
+                self.external_sources.insert(record.handle, source.clone());
+            }
         }
     }
 
@@ -306,6 +380,9 @@ impl IfccadRoundtripContext {
 
     pub(in crate::ifcx) fn remember_export(&mut self, saved: SavedIdentities) {
         self.counters = saved.counters;
+        self.external_sources.extend(saved.external_sources);
+        self.external_source_history
+            .extend(saved.external_source_history);
         self.entities.extend(saved.entities);
         self.layers.extend(saved.layers);
         self.layouts.extend(saved.layouts);
@@ -393,6 +470,8 @@ impl IfccadRoundtripContext {
 }
 
 pub(in crate::ifcx) struct SavedIdentities {
+    external_source_history: HashMap<(Handle, String), ifccad::IfccadExternalSource>,
+    external_sources: HashMap<Handle, ifccad::IfccadExternalSource>,
     counters: IfccadIdCounters,
     entities: HashMap<Handle, u64>,
     layers: HashMap<Handle, u64>,
@@ -440,6 +519,35 @@ impl SavedIdentities {
             })
             .collect();
         Self {
+            external_source_history: writer
+                .external_sources
+                .iter()
+                .filter_map(|(&h, id)| {
+                    let source = writer
+                        .drawing
+                        .external_sources
+                        .iter()
+                        .find(|s| s.id == *id)?;
+                    let record = writer
+                        .document
+                        .block_records
+                        .iter()
+                        .find(|b| b.handle == h)?;
+                    Some(((h, record.xref_path.clone()), source.clone()))
+                })
+                .collect(),
+            external_sources: writer
+                .external_sources
+                .iter()
+                .filter_map(|(&h, id)| {
+                    writer
+                        .drawing
+                        .external_sources
+                        .iter()
+                        .find(|s| s.id == *id)
+                        .map(|s| (h, s.clone()))
+                })
+                .collect(),
             counters: writer.drawing.id_counters,
             entities,
             layers,

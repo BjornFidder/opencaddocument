@@ -45,6 +45,12 @@ mod attributes;
 mod dimension;
 mod dimension_graphics;
 mod dimension_kinds;
+mod external_sources;
+mod xref;
+pub use external_sources::{
+    dwg_external_source_content, dwg_xref_fingerprint_guid, external_source_location_from_cad_path,
+    external_source_location_to_cad_path, validate_cad_external_sources,
+};
 mod font;
 mod hatch;
 mod layout;
@@ -77,7 +83,7 @@ const TEMPLATE: &str = r#"{
     "author": "OpenCAD",
     "timestamp": "1970-01-01T00:00:00Z"
   },
-  "imports": [{ "uri": "urn:example:ifccad:0.11.0" }],
+  "imports": [{ "uri": "urn:example:ifccad:0.12.0" }],
   "schemas": {},
   "data": [
     {
@@ -96,7 +102,7 @@ const TEMPLATE: &str = r#"{
           "nextLayoutId": 2,
           "nextLinePatternId": 1,
           "nextSymbolSourceId": 1,
-          "profileVersion": "0.11.0",
+          "profileVersion": "0.12.0",
           "nextUcsId": 1,
           "nextModelWindowId": 1
         }
@@ -253,7 +259,7 @@ impl Ifcx {
     fn import_ifccad_inner(
         &self,
         drawing: &IfccadDocument,
-        #[cfg(feature = "mline-pilot")] context: Option<&mut IfccadRoundtripContext>,
+        #[cfg(feature = "mline-pilot")] mut context: Option<&mut IfccadRoundtripContext>,
     ) -> Result<IfccadImportOutcome, Error> {
         ifccad::validate_ifccad_document(drawing)?;
         #[cfg(feature = "mline-pilot")]
@@ -290,6 +296,11 @@ impl Ifcx {
         }
 
         let mut names = Names::default();
+        xref::sources_in(drawing, &mut document, &mut names, &mut losses)?;
+        #[cfg(feature = "mline-pilot")]
+        if let Some(context) = context.as_deref_mut() {
+            context.remember_external_sources(drawing, &document, &names);
+        }
         annotation::read_scales(drawing, &mut document, &mut names);
         annotation_views::import(drawing, &mut document, &mut names)?;
         tables::read(drawing, &mut document, &mut names, &mut losses)?;
@@ -532,6 +543,7 @@ impl Ifcx {
             _ => return Err(annotation::invalid("invalid ATTMODE")),
         };
         let mut writer = Writer {
+            external_sources: HashMap::new(),
             #[cfg(feature = "mline-pilot")]
             roundtrip: context.as_deref(),
             table_data_links: HashMap::new(),
@@ -624,6 +636,7 @@ impl Ifcx {
             context.emit(&mut writer)?;
         }
         plot_styles::assignments_out(&mut writer);
+        xref::diagnose_dependency_losses(&mut writer);
         ifccad::validate_ifccad_document(&writer.drawing)?;
         #[cfg(feature = "mline-pilot")]
         let saved = context
@@ -680,6 +693,7 @@ fn link_hatches(
 /// Names of what IFCX refers to by id.
 #[derive(Default)]
 struct Names {
+    external_sources: HashMap<ifccad::IfccadExternalSourceId, String>,
     table_data_links: HashMap<ifccad::IfccadTableDataLinkId, Handle>,
     table_styles: HashMap<ifccad::IfccadTableStyleId, Handle>,
     multi_leader_styles: HashMap<ifccad::IfccadMultiLeaderStyleId, Handle>,
@@ -717,6 +731,7 @@ fn add_in(
         return Ok(None);
     };
     let converted = match &entity.kind {
+        IfccadEntityKind::Xref(source) => xref::insert_in(source, names),
         IfccadEntityKind::Dimension(source) => {
             dimension::dimension_in(source, document, names, losses)
         }
@@ -808,6 +823,7 @@ fn add_in(
 }
 
 struct Writer<'a> {
+    external_sources: HashMap<Handle, ifccad::IfccadExternalSourceId>,
     #[cfg(feature = "mline-pilot")]
     roundtrip: Option<&'a IfccadRoundtripContext>,
     table_data_links: HashMap<Handle, ifccad::IfccadTableDataLinkId>,
@@ -954,7 +970,23 @@ impl Writer<'_> {
         let common = entity.common();
         let layer_id = match self.layers.get(&common.layer.to_ascii_lowercase()) {
             Some(id) => *id,
-            None => self.layers.get("0").copied().unwrap_or(0),
+            None => {
+                if self
+                    .document
+                    .layers
+                    .get(&common.layer)
+                    .is_some_and(|layer| layer.flags.xref_dependent)
+                {
+                    self.losses.located_loss(
+                        common.handle,
+                        format!(
+                            "local entity uses external dependent layer {}",
+                            common.layer
+                        ),
+                    );
+                }
+                self.layers.get("0").copied().unwrap_or(0)
+            }
         };
         let id = self.entity_id(common.handle)?;
         if let EntityType::Hatch(hatch) = entity {
@@ -987,6 +1019,11 @@ impl Writer<'_> {
         let Some(record) = document.block_records.get(name) else {
             return Ok(None);
         };
+        if record.flags.is_xref || record.flags.is_xref_overlay {
+            self.external_source(record)?;
+            self.blocks.insert(key, None);
+            return Ok(None);
+        }
         if record.is_layout()
             || record.is_model_space()
             || record.is_paper_space()
@@ -1342,6 +1379,11 @@ impl Writer<'_> {
                 return Ok(dimension::dimension_out(self, dimension))
             }
             EntityType::Insert(insert) => {
+                if let Some(record) = self.document.block_records.get(&insert.block_name) {
+                    if record.flags.is_xref || record.flags.is_xref_overlay {
+                        return self.xref_kind(insert, record);
+                    }
+                }
                 if insert.is_array() {
                     return Ok(None);
                 }
@@ -1433,6 +1475,7 @@ impl Losses {
 
 fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Option<EntityType> {
     Some(match kind {
+        IfccadEntityKind::Xref(source) => return xref::insert_in(source, names),
         IfccadEntityKind::AttributeDefinition(a) => {
             return attributes::definition_in(a, names, losses)
         }
@@ -1962,6 +2005,7 @@ fn array(v: Vector3) -> [f64; 3] {
 
 fn kind_name(kind: &IfccadEntityKind) -> &'static str {
     match kind {
+        IfccadEntityKind::Xref(_) => "XREF",
         IfccadEntityKind::Solid(_) => "Solid",
         IfccadEntityKind::Trace(_) => "Trace",
         IfccadEntityKind::Table(_) => "Table",

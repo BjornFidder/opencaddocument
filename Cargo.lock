@@ -261,6 +261,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fnv"
+version = "1.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
+
+[[package]]
 name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -443,8 +449,8 @@ dependencies = [
 
 [[package]]
 name = "ifccad"
-version = "2026.46.1"
-source = "git+https://github.com/OpenAEC-Foundation/ifccad.git?rev=9ca1cf1ff4c71dad8d380677e9eb657818b03d80#9ca1cf1ff4c71dad8d380677e9eb657818b03d80"
+version = "2026.47.0"
+source = "git+https://github.com/OpenAEC-Foundation/ifccad.git?rev=96895aea607e3f2a54f9b286115844554f59df77#96895aea607e3f2a54f9b286115844554f59df77"
 dependencies = [
  "base64",
  "fpmath",
@@ -456,6 +462,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "uriparse",
 ]
 
 [[package]]
@@ -1149,6 +1156,16 @@ name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "uriparse"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0200d0fc04d809396c2ad43f3c95da3582a2556eba8d453c1087f4120ee352ff"
+dependencies = [
+ "fnv",
+ "lazy_static",
+]
 
 [[package]]
 name = "utf8_iter"

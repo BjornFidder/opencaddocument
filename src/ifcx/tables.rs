@@ -224,7 +224,7 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
     for style in document
         .text_styles
         .iter()
-        .filter(|style| style.is_shape_file)
+        .filter(|style| style.is_shape_file && !style.xref_dependent)
     {
         let file_name = ifccad::line_pattern::shx_file_name_from_cad_request(&style.font_file)
             .map_err(|error| format!("invalid SHX STYLE {:?}: {error}", style.handle))?;
@@ -241,7 +241,7 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
     }
 
     for style in document.text_styles.iter() {
-        if style.is_shape_file || style.name.is_empty() {
+        if style.is_shape_file || style.name.is_empty() || style.xref_dependent {
             continue;
         }
         let font = font::font_from_cad_style(
@@ -281,6 +281,9 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
 
     // The template's continuous pattern (id 0) stands for the document's.
     for linetype in document.line_types.iter() {
+        if linetype.xref_dependent {
+            continue;
+        }
         let key = linetype.name.to_ascii_lowercase();
         if key == "bylayer" || key == "byblock" {
             continue;
@@ -377,6 +380,9 @@ pub(super) fn write(writer: &mut Writer) -> Result<(), Error> {
     }
 
     for layer in document.layers.iter() {
+        if layer.flags.xref_dependent {
+            continue;
+        }
         let line_pattern = match writer
             .line_patterns
             .get(&layer.line_type.to_ascii_lowercase())
