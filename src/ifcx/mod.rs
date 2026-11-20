@@ -50,7 +50,7 @@ mod xref;
 pub use external_sources::{
     dwg_external_source_content, dwg_xref_fingerprint_guid, dxf_external_source_content,
     external_source_location_from_cad_path, external_source_location_to_cad_path,
-    validate_cad_external_sources,
+    ifccad_external_source_content, validate_cad_external_sources,
 };
 mod font;
 mod hatch;
