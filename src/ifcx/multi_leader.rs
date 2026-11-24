@@ -562,11 +562,19 @@ fn text_out(
         cad::TextAttachmentPointType::TopCenter => acadrust::entities::AttachmentPoint::TopCenter,
         cad::TextAttachmentPointType::TopRight => acadrust::entities::AttachmentPoint::TopRight,
         cad::TextAttachmentPointType::MiddleLeft => acadrust::entities::AttachmentPoint::MiddleLeft,
-        cad::TextAttachmentPointType::MiddleCenter => acadrust::entities::AttachmentPoint::MiddleCenter,
-        cad::TextAttachmentPointType::MiddleRight => acadrust::entities::AttachmentPoint::MiddleRight,
+        cad::TextAttachmentPointType::MiddleCenter => {
+            acadrust::entities::AttachmentPoint::MiddleCenter
+        }
+        cad::TextAttachmentPointType::MiddleRight => {
+            acadrust::entities::AttachmentPoint::MiddleRight
+        }
         cad::TextAttachmentPointType::BottomLeft => acadrust::entities::AttachmentPoint::BottomLeft,
-        cad::TextAttachmentPointType::BottomCenter => acadrust::entities::AttachmentPoint::BottomCenter,
-        cad::TextAttachmentPointType::BottomRight => acadrust::entities::AttachmentPoint::BottomRight,
+        cad::TextAttachmentPointType::BottomCenter => {
+            acadrust::entities::AttachmentPoint::BottomCenter
+        }
+        cad::TextAttachmentPointType::BottomRight => {
+            acadrust::entities::AttachmentPoint::BottomRight
+        }
     };
     m.drawing_direction = match value.text_flow_direction {
         cad::FlowDirectionType::Horizontal => acadrust::entities::DrawingDirection::LeftToRight,

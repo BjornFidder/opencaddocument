@@ -169,21 +169,55 @@ pub fn validate_cad_external_sources(document: &crate::Document) -> Result<(), E
     Ok(())
 }
 
+fn cad_source_metadata(document: &crate::Document) -> ([f64; 3], Option<String>, Option<String>) {
+    let code = document.header.insertion_units;
+    (
+        super::array(document.header.model_space_insertion_base),
+        usize::try_from(code)
+            .ok()
+            .and_then(|i| super::UNITS.get(i))
+            .map(|v| (*v).to_owned()),
+        ifccad::normalize_ifccad_fingerprint_guid(&document.header.fingerprint_guid),
+    )
+}
+
 /// Metadata of an actually opened DWG. This never invents a source UUID.
 pub fn dwg_external_source_content(
     document: &crate::Document,
 ) -> ifccad::IfccadExternalSourceContent {
-    let code = document.header.insertion_units;
+    let (base_point, insertion_unit, fingerprint_guid) = cad_source_metadata(document);
     ifccad::IfccadExternalSourceContent::Dwg {
-        base_point: super::array(document.header.model_space_insertion_base),
-        insertion_unit: usize::try_from(code)
-            .ok()
-            .and_then(|i| super::UNITS.get(i))
-            .map(|v| (*v).to_owned()),
-        fingerprint_guid: ifccad::normalize_ifccad_fingerprint_guid(
-            &document.header.fingerprint_guid,
-        ),
+        base_point,
+        insertion_unit,
+        fingerprint_guid,
     }
+}
+
+/// Metadata of an actually opened DXF, including its available header identity.
+pub fn dxf_external_source_content(
+    document: &crate::Document,
+) -> ifccad::IfccadExternalSourceContent {
+    let (base_point, insertion_unit, fingerprint_guid) = cad_source_metadata(document);
+    ifccad::IfccadExternalSourceContent::Dxf {
+        base_point,
+        insertion_unit,
+        fingerprint_guid,
+    }
+}
+
+/// Metadata for a native source projected into a host drawing temporarily.
+/// Its own external-source graph is outside the nonrecursive source slice.
+pub fn ifccad_external_source_content(
+    drawing: &ifccad::IfccadDocument,
+) -> Result<ifccad::IfccadExternalSourceContent, Error> {
+    ifccad::validate_ifccad_document(drawing)?;
+    if !drawing.external_sources.is_empty() {
+        return Err("This IFCCAD source contains its own external references; nested XREF sources are not supported yet".into());
+    }
+    Ok(ifccad::IfccadExternalSourceContent::Ifccad {
+        base_point: [0.; 3],
+        insertion_unit: Some(drawing.length_unit.clone()),
+    })
 }
 
 /// Expected XREF identity from the physical feature/filename key, independently

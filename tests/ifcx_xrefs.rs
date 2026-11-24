@@ -56,7 +56,10 @@ fn offline_xref_roundtrip_keeps_source_and_effective_placement() {
             base_point,
             fingerprint_guid,
             ..
-        } = &back.drawing.external_sources[0].source;
+        } = &back.drawing.external_sources[0].source
+        else {
+            panic!("DWG source expected")
+        };
         assert_eq!(*base_point, [10., 20., 0.]);
         assert_eq!(fingerprint_guid.is_some(), keep_guid);
         let IfccadEntityKind::Xref(x) = &back.drawing.model.entities[0].as_native().unwrap().kind
@@ -128,13 +131,10 @@ fn source_without_insert_is_retained_and_deletion_does_not_reuse_id() {
 
 #[test]
 fn unsupported_cad_attachment_variants_are_explicit_losses() {
-    for variant in ["overlay", "array", "paper", "block", "dxf-source"] {
+    for variant in ["overlay", "array", "paper", "block"] {
         let imported = Ifcx.import_ifccad(&drawing()).unwrap();
         let mut cad = imported.document;
         let handle = *imported.entity_handles.get(&1000).unwrap();
-        if variant == "dxf-source" {
-            cad.block_records.get_mut("grondplan").unwrap().xref_path = "source.dxf".into();
-        }
         if variant == "overlay" {
             cad.block_records
                 .get_mut("grondplan")
