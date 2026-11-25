@@ -206,14 +206,11 @@ pub fn dxf_external_source_content(
 }
 
 /// Metadata for a native source projected into a host drawing temporarily.
-/// Its own external-source graph is outside the nonrecursive source slice.
+/// Owner-local references remain in the preserving import context; no IO occurs here.
 pub fn ifccad_external_source_content(
     drawing: &ifccad::IfccadDocument,
 ) -> Result<ifccad::IfccadExternalSourceContent, Error> {
     ifccad::validate_ifccad_document(drawing)?;
-    if !drawing.external_sources.is_empty() {
-        return Err("This IFCCAD source contains its own external references; nested XREF sources are not supported yet".into());
-    }
     Ok(ifccad::IfccadExternalSourceContent::Ifccad {
         base_point: [0.; 3],
         insertion_unit: Some(drawing.length_unit.clone()),

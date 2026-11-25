@@ -2,6 +2,7 @@
 use super::*;
 use ifccad::{
     IfccadExternalSource, IfccadExternalSourceContent, IfccadExternalSourceId, IfccadXref,
+    IfccadXrefReferenceType,
 };
 
 pub(super) fn diagnose_dependency_losses(writer: &mut Writer<'_>) {
@@ -127,32 +128,68 @@ pub(super) fn sources_in(
                 }
             }
         };
-        let mut record = BlockRecord::new(source.name.clone());
-        record.handle = document.allocate_handle();
-        record.block_entity_handle = document.allocate_handle();
-        record.block_end_handle = document.allocate_handle();
-        record.flags.is_xref = true;
-        record.xref_path = path.clone();
-        record.base_point = vector(source.source.base_point());
-        record.units = source.source.insertion_unit().map(unit_code).unwrap_or(0);
-        let mut block = Block::new(record.name.clone(), record.base_point);
-        block.common.handle = record.block_entity_handle;
-        block.common.owner_handle = record.handle;
-        let mut end = BlockEnd::new();
-        end.common.handle = record.block_end_handle;
-        end.common.owner_handle = record.handle;
-        names
-            .external_sources
-            .insert(source.id, source.name.clone());
-        document.block_records.add(record)?;
-        document.add_entity(EntityType::Block(block))?;
-        document.add_entity(EntityType::BlockEnd(end))?;
-        if let Some(guid) = source.source.fingerprint_guid() {
-            document
+        let mut types: Vec<_> = drawing
+            .model
+            .entities
+            .iter()
+            .filter_map(IfccadEntity::as_native)
+            .filter_map(|e| match &e.kind {
+                IfccadEntityKind::Xref(x) if x.source_id == source.id => Some(x.reference_type),
+                _ => None,
+            })
+            .collect();
+        types.sort_by_key(|t| matches!(t, IfccadXrefReferenceType::Overlay));
+        types.dedup();
+        if types.is_empty() {
+            types.push(IfccadXrefReferenceType::Attach);
+        }
+        for (index, reference_type) in types.into_iter().enumerate() {
+            let mut name = source.name.clone();
+            if index != 0 {
+                let base = format!("{}$XREF_OVERLAY", source.name);
+                name = base.clone();
+                let mut suffix = 1;
+                while document.block_records.get(&name).is_some()
+                    || drawing
+                        .blocks
+                        .iter()
+                        .any(|b| b.name.eq_ignore_ascii_case(&name))
+                    || drawing
+                        .external_sources
+                        .iter()
+                        .any(|s| s.id != source.id && s.name.eq_ignore_ascii_case(&name))
+                {
+                    name = format!("{base}_{suffix}");
+                    suffix += 1;
+                }
+            }
+            let mut record = BlockRecord::new(name.clone());
+            record.handle = document.allocate_handle();
+            record.block_entity_handle = document.allocate_handle();
+            record.block_end_handle = document.allocate_handle();
+            record.flags.is_xref = true;
+            record.flags.is_xref_overlay = reference_type == IfccadXrefReferenceType::Overlay;
+            record.xref_path = path.clone();
+            record.base_point = vector(source.source.base_point());
+            record.units = source.source.insertion_unit().map(unit_code).unwrap_or(0);
+            let mut block = Block::new(record.name.clone(), record.base_point);
+            block.common.handle = record.block_entity_handle;
+            block.common.owner_handle = record.handle;
+            let mut end = BlockEnd::new();
+            end.common.handle = record.block_end_handle;
+            end.common.owner_handle = record.handle;
+            names
+                .external_sources
+                .insert((source.id, reference_type), name);
+            document.block_records.add(record)?;
+            document.add_entity(EntityType::Block(block))?;
+            document.add_entity(EntityType::BlockEnd(end))?;
+            if let Some(guid) = source.source.fingerprint_guid() {
+                document
                 .file_dependencies
                 .push(acadrust::document::FileDependency {
                 feature: "Acad:XRef".into(),
-                file_name: path,
+                file_name: path.clone(),
                 found_path: String::new(),
                 fingerprint_guid: Some(format!("{{{}}}", guid.to_ascii_uppercase())),
                 version_guid: None,
@@ -170,13 +207,16 @@ pub(super) fn sources_in(
                     .count()
                     .try_into()?,
             });
+            }
         }
     }
     Ok(())
 }
 
 pub(super) fn insert_in(xref: &IfccadXref, names: &Names) -> Option<EntityType> {
-    let name = names.external_sources.get(&xref.source_id)?;
+    let name = names
+        .external_sources
+        .get(&(xref.source_id, xref.reference_type))?;
     let (origin, normal, rotation) = placement_in(&xref.placement);
     let mut insert = Insert::new(name.clone(), origin);
     insert.normal = normal;
@@ -192,13 +232,6 @@ impl Writer<'_> {
         &mut self,
         record: &BlockRecord,
     ) -> Result<Option<IfccadExternalSourceId>, Error> {
-        if record.flags.is_xref_overlay {
-            self.losses.note(format!(
-                "XREF {} overlay is outside the Model attachment slice",
-                record.name
-            ));
-            return Ok(None);
-        }
         if let Some(id) = self.external_sources.get(&record.handle) {
             return Ok(Some(*id));
         }
@@ -210,8 +243,19 @@ impl Writer<'_> {
             .flatten();
         #[cfg(not(feature = "mline-pilot"))]
         let retained: Option<IfccadExternalSource> = None;
-        let source = if let Some(mut source) = retained {
-            source.name = record.name.clone();
+        let source = if let Some(source) = retained {
+            #[cfg(feature = "mline-pilot")]
+            let source = {
+                let mut source = source;
+                if self
+                    .roundtrip
+                    .as_ref()
+                    .is_some_and(|c| c.external_source_name_changed(record))
+                {
+                    source.name = record.name.clone();
+                }
+                source
+            };
             source
         } else {
             let location =
@@ -245,7 +289,15 @@ impl Writer<'_> {
             }
         };
         let id = source.id;
-        self.drawing.external_sources.push(source);
+        if let Some(existing) = self.drawing.external_sources.iter().find(|s| s.id == id) {
+            if existing != &source {
+                return Err(annotation::invalid(
+                    "conflicting edits to shared XREF source",
+                ));
+            }
+        } else {
+            self.drawing.external_sources.push(source);
+        }
         self.external_sources.insert(record.handle, id);
         Ok(Some(id))
     }
@@ -286,6 +338,11 @@ impl Writer<'_> {
             source_id,
             placement,
             scale: scales[0],
+            reference_type: if record.flags.is_xref_overlay {
+                IfccadXrefReferenceType::Overlay
+            } else {
+                IfccadXrefReferenceType::Attach
+            },
         })))
     }
 }

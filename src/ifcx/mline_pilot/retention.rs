@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, HashMap};
 /// CAD handles inside it refer to that session and are rebuilt on reopen.
 #[derive(Clone, Debug)]
 pub struct IfccadRoundtripContext {
+    external_source_definition_names: HashMap<Handle, String>,
     external_source_history: HashMap<(Handle, String), ifccad::IfccadExternalSource>,
     external_sources: HashMap<Handle, ifccad::IfccadExternalSource>,
     header_id: String,
@@ -151,6 +152,7 @@ fn exported_pattern(writer: &Writer<'_>, handle: Handle) -> Option<IfccadLinePat
 impl IfccadRoundtripContext {
     pub(in crate::ifcx) fn new(drawing: &IfccadDocument) -> Self {
         Self {
+            external_source_definition_names: HashMap::new(),
             external_source_history: HashMap::new(),
             external_sources: HashMap::new(),
             header_id: drawing.header.id.clone(),
@@ -166,6 +168,15 @@ impl IfccadRoundtripContext {
             patterns: HashMap::new(),
             model_id: drawing.model.id,
         }
+    }
+
+    /// Owner-local source definitions, including unused entries and split types.
+    pub fn external_source_definitions(
+        &self,
+    ) -> impl Iterator<Item = (Handle, &ifccad::IfccadExternalSource)> {
+        self.external_sources
+            .iter()
+            .map(|(handle, source)| (*handle, source))
     }
 
     /// Native source metadata for this CAD block, independent of resolved bytes.
@@ -188,6 +199,15 @@ impl IfccadRoundtripContext {
         };
         source.location = crate::external_source_location_from_cad_path(path)?;
         Ok(Some(source))
+    }
+
+    pub(in crate::ifcx) fn external_source_name_changed(
+        &self,
+        record: &crate::BlockRecord,
+    ) -> bool {
+        self.external_source_definition_names
+            .get(&record.handle)
+            .is_none_or(|name| name != &record.name)
     }
 
     /// Register an explicitly attached source. Deleting/undoing its CAD block
@@ -226,14 +246,17 @@ impl IfccadRoundtripContext {
         names: &Names,
     ) {
         for source in &drawing.external_sources {
-            if let Some(record) = names
-                .external_sources
-                .get(&source.id)
-                .and_then(|name| document.block_records.get(name))
-            {
-                self.external_source_history
-                    .insert((record.handle, record.xref_path.clone()), source.clone());
-                self.external_sources.insert(record.handle, source.clone());
+            for ((id, _), name) in &names.external_sources {
+                if *id != source.id {
+                    continue;
+                }
+                if let Some(record) = document.block_records.get(name) {
+                    self.external_source_definition_names
+                        .insert(record.handle, record.name.clone());
+                    self.external_source_history
+                        .insert((record.handle, record.xref_path.clone()), source.clone());
+                    self.external_sources.insert(record.handle, source.clone());
+                }
             }
         }
     }
