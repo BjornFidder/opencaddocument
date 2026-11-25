@@ -131,7 +131,7 @@ fn source_without_insert_is_retained_and_deletion_does_not_reuse_id() {
 
 #[test]
 fn unsupported_cad_attachment_variants_are_explicit_losses() {
-    for variant in ["overlay", "array", "paper", "block"] {
+    for variant in ["array", "paper", "block"] {
         let imported = Ifcx.import_ifccad(&drawing()).unwrap();
         let mut cad = imported.document;
         let handle = *imported.entity_handles.get(&1000).unwrap();

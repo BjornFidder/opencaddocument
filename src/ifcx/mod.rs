@@ -705,7 +705,13 @@ fn link_hatches(
 /// Names of what IFCX refers to by id.
 #[derive(Default)]
 struct Names {
-    external_sources: HashMap<ifccad::IfccadExternalSourceId, String>,
+    external_sources: HashMap<
+        (
+            ifccad::IfccadExternalSourceId,
+            ifccad::IfccadXrefReferenceType,
+        ),
+        String,
+    >,
     table_data_links: HashMap<ifccad::IfccadTableDataLinkId, Handle>,
     table_styles: HashMap<ifccad::IfccadTableStyleId, Handle>,
     multi_leader_styles: HashMap<ifccad::IfccadMultiLeaderStyleId, Handle>,
@@ -1031,6 +1037,10 @@ impl Writer<'_> {
         let Some(record) = document.block_records.get(name) else {
             return Ok(None);
         };
+        if record.flags.is_external && !record.flags.is_xref && !record.flags.is_xref_overlay {
+            self.blocks.insert(key, None);
+            return Ok(None);
+        }
         if record.flags.is_xref || record.flags.is_xref_overlay {
             self.external_source(record)?;
             self.blocks.insert(key, None);

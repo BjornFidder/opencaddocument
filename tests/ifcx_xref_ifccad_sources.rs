@@ -27,17 +27,20 @@ fn native_source_metadata_has_zero_origin_and_no_invented_fingerprint() {
 }
 
 #[test]
-fn native_source_with_its_own_external_sources_is_refused() {
+fn native_source_with_its_own_external_sources_preserves_context() {
     let source = load_ifccad_bytes(
         include_bytes!("fixtures/xref/attachment.ifcx"),
         Default::default(),
     )
     .unwrap()
     .into_document();
-    let error = opencaddocument::ifccad_external_source_content(&source)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("external"), "{error}");
+    let content = opencaddocument::ifccad_external_source_content(&source).unwrap();
+    assert_eq!(content.base_point(), [0.; 3]);
+    let (imported, mut context) = Ifcx.import_ifccad_preserving(&source).unwrap();
+    let saved = Ifcx
+        .export_ifccad_preserving(&imported.document, &mut context)
+        .unwrap();
+    assert_eq!(saved.drawing.external_sources, source.external_sources);
 }
 
 #[test]
