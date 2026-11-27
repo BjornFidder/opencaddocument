@@ -45,7 +45,7 @@ fn offline_xref_roundtrip_keeps_source_and_effective_placement() {
     else {
         panic!()
     };
-    assert_eq!(saved.scale, 500.);
+    assert_eq!(saved.transform.scale, [500.; 3]);
     for (format, keep_guid) in [(&Dwg as &dyn Format, true), (&Dxf as &dyn Format, false)] {
         let (bytes, losses) = format.write(&imported.document).unwrap();
         assert!(losses.is_empty(), "{losses:?}");
@@ -66,8 +66,14 @@ fn offline_xref_roundtrip_keeps_source_and_effective_placement() {
         else {
             panic!()
         };
-        assert_eq!(x.scale, 500.);
-        assert!((x.placement.x_axis[1] - 1.).abs() < 1e-12);
+        assert_eq!(x.transform.scale, [500.; 3]);
+        assert!(
+            ((x.transform.rotation
+                + x.transform.placement.x_axis[1].atan2(x.transform.placement.x_axis[0]))
+                - std::f64::consts::FRAC_PI_2)
+                .abs()
+                < 1e-12
+        );
         validate_ifccad_document(&back.drawing).unwrap();
     }
 }
@@ -131,49 +137,20 @@ fn source_without_insert_is_retained_and_deletion_does_not_reuse_id() {
 
 #[test]
 fn unsupported_cad_attachment_variants_are_explicit_losses() {
-    for variant in ["array", "paper", "block"] {
+    for (rows, columns) in [(2, 1), (1, 2)] {
         let imported = Ifcx.import_ifccad(&drawing()).unwrap();
         let mut cad = imported.document;
         let handle = *imported.entity_handles.get(&1000).unwrap();
-        if variant == "overlay" {
-            cad.block_records
-                .get_mut("grondplan")
-                .unwrap()
-                .flags
-                .is_xref_overlay = true;
-        }
-        if variant == "array" {
-            let EntityType::Insert(i) = cad.get_entity_mut(handle).unwrap() else {
-                panic!()
-            };
-            i.row_count = 2;
-        }
-        if variant == "paper" {
-            let owner = cad
-                .block_records
-                .iter()
-                .find(|b| b.is_paper_space())
-                .unwrap()
-                .handle;
-            cad.get_entity_mut(handle)
-                .unwrap()
-                .common_mut()
-                .owner_handle = owner;
-        }
-        if variant == "block" {
-            let mut record = tables::BlockRecord::new("LOCAL");
-            record.handle = cad.allocate_handle();
-            let owner = record.handle;
-            cad.block_records.add(record).unwrap();
-            cad.get_entity_mut(handle)
-                .unwrap()
-                .common_mut()
-                .owner_handle = owner;
-        }
+        let EntityType::Insert(insert) = cad.get_entity_mut(handle).unwrap() else {
+            panic!()
+        };
+        insert.row_count = rows;
+        insert.column_count = columns;
+
         let out = Ifcx.export_ifccad(&cad).unwrap();
         assert!(
             out.losses.iter().any(|l| l.message.contains("XREF")),
-            "{variant}: {:?}",
+            "array {rows}x{columns}: {:?}",
             out.losses
         );
         assert!(!out

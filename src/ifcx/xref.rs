@@ -5,35 +5,49 @@ use ifccad::{
     IfccadXrefReferenceType,
 };
 
+fn native_entities(drawing: &IfccadDocument) -> impl Iterator<Item = &IfccadEntity> {
+    drawing
+        .model
+        .entities
+        .iter()
+        .chain(drawing.paper_layouts.iter().flat_map(|p| &p.entities))
+        .chain(drawing.blocks.iter().flat_map(|b| &b.entities))
+}
+
 pub(super) fn diagnose_dependency_losses(writer: &mut Writer<'_>) {
     for dependency in &writer.document.file_dependencies {
-        let binding = writer.document.block_records.iter().find(|record| {
-            if !writer.external_sources.contains_key(&record.handle)
-                || !dependency.feature.eq_ignore_ascii_case("Acad:XRef")
-            {
-                return false;
-            }
-            let matches = dependency
-                .file_name
-                .replace('\\', "/")
-                .eq_ignore_ascii_case(&record.xref_path.replace('\\', "/"));
-            #[cfg(feature = "mline-pilot")]
-            let matches = matches
-                || writer
-                    .roundtrip
-                    .and_then(|context| context.external_source(record.handle))
-                    .is_some_and(|source| {
-                        external_sources::external_source_location_to_cad_path(&source.location)
-                            .is_ok_and(|path| {
-                                dependency
-                                    .file_name
-                                    .replace('\\', "/")
-                                    .eq_ignore_ascii_case(&path.replace('\\', "/"))
-                            })
-                    });
-            matches
-        });
-        let Some(binding) = binding else {
+        let bindings: Vec<_> = writer
+            .document
+            .block_records
+            .iter()
+            .filter(|record| {
+                if !writer.external_sources.contains_key(&record.handle)
+                    || !dependency.feature.eq_ignore_ascii_case("Acad:XRef")
+                {
+                    return false;
+                }
+                let matches = dependency
+                    .file_name
+                    .replace('\\', "/")
+                    .eq_ignore_ascii_case(&record.xref_path.replace('\\', "/"));
+                #[cfg(feature = "mline-pilot")]
+                let matches = matches
+                    || writer
+                        .roundtrip
+                        .and_then(|context| context.external_source(record.handle))
+                        .is_some_and(|source| {
+                            external_sources::external_source_location_to_cad_path(&source.location)
+                                .is_ok_and(|path| {
+                                    dependency
+                                        .file_name
+                                        .replace('\\', "/")
+                                        .eq_ignore_ascii_case(&path.replace('\\', "/"))
+                                })
+                        });
+                matches
+            })
+            .collect();
+        let Some(binding) = bindings.first() else {
             writer.losses.note(format!(
                 "unbound FileDepList record {}: {}",
                 dependency.feature, dependency.file_name
@@ -59,13 +73,9 @@ pub(super) fn diagnose_dependency_losses(writer: &mut Writer<'_>) {
                 dependency.file_name
             ));
         }
-        let references = writer
-            .drawing
-            .model
-            .entities
-            .iter()
+        let references = native_entities(&writer.drawing)
             .filter_map(IfccadEntity::as_native)
-            .filter(|e| matches!(&e.kind, IfccadEntityKind::Xref(x) if x.source_id == source_id))
+            .filter(|e| matches!(&e.kind, IfccadEntityKind::Xref(x) if bindings.iter().any(|r| writer.external_sources[&r.handle] == x.source_id)))
             .count();
         if dependency
             .fingerprint_guid
@@ -128,10 +138,7 @@ pub(super) fn sources_in(
                 }
             }
         };
-        let mut types: Vec<_> = drawing
-            .model
-            .entities
-            .iter()
+        let mut types: Vec<_> = native_entities(drawing)
             .filter_map(IfccadEntity::as_native)
             .filter_map(|e| match &e.kind {
                 IfccadEntityKind::Xref(x) if x.source_id == source.id => Some(x.reference_type),
@@ -184,8 +191,9 @@ pub(super) fn sources_in(
             document.block_records.add(record)?;
             document.add_entity(EntityType::Block(block))?;
             document.add_entity(EntityType::BlockEnd(end))?;
-            if let Some(guid) = source.source.fingerprint_guid() {
-                document
+        }
+        if let Some(guid) = source.source.fingerprint_guid() {
+            document
                 .file_dependencies
                 .push(acadrust::document::FileDependency {
                 feature: "Acad:XRef".into(),
@@ -196,10 +204,7 @@ pub(super) fn sources_in(
                 timestamp: 0,
                 file_size: 0,
                 affects_graphics: true,
-                reference_count: drawing
-                    .model
-                    .entities
-                    .iter()
+                reference_count: native_entities(drawing)
                     .filter_map(IfccadEntity::as_native)
                     .filter(
                         |e| matches!(&e.kind,IfccadEntityKind::Xref(x) if x.source_id==source.id),
@@ -207,24 +212,34 @@ pub(super) fn sources_in(
                     .count()
                     .try_into()?,
             });
-            }
         }
     }
     Ok(())
 }
 
-pub(super) fn insert_in(xref: &IfccadXref, names: &Names) -> Option<EntityType> {
+pub(super) fn insert_in(
+    xref: &IfccadXref,
+    names: &Names,
+    losses: &mut Losses,
+) -> Option<EntityType> {
     let name = names
         .external_sources
         .get(&(xref.source_id, xref.reference_type))?;
-    let (origin, normal, rotation) = placement_in(&xref.placement);
+    let (origin, normal, frame) = placement_in(&xref.transform.placement);
     let mut insert = Insert::new(name.clone(), origin);
     insert.normal = normal;
-    insert.rotation = rotation;
-    insert.set_x_scale(xref.scale);
-    insert.set_y_scale(xref.scale);
-    insert.set_z_scale(xref.scale);
-    (insert.x_scale().to_bits() == xref.scale.to_bits()).then_some(EntityType::Insert(insert))
+    insert.rotation = frame + xref.transform.rotation;
+    let [x, y, z] = xref.transform.scale;
+    insert.set_x_scale(x);
+    insert.set_y_scale(y);
+    insert.set_z_scale(z);
+    if [insert.x_scale(), insert.y_scale(), insert.z_scale()].map(f64::to_bits)
+        != xref.transform.scale.map(f64::to_bits)
+    {
+        losses.note("XREF scale cannot be represented by CAD INSERT setters");
+        return None;
+    }
+    Some(EntityType::Insert(insert))
 }
 
 impl Writer<'_> {
@@ -307,37 +322,30 @@ impl Writer<'_> {
         insert: &Insert,
         record: &BlockRecord,
     ) -> Result<Option<IfccadEntityKind>, Error> {
-        let owner = insert.common.owner_handle;
-        let model = owner.is_null()
-            || self
-                .document
-                .block_records
-                .iter()
-                .any(|b| b.handle == owner && b.is_model_space());
         let scales = [insert.x_scale(), insert.y_scale(), insert.z_scale()];
-        let placement = placement_out(insert.insert_point, insert.normal, insert.rotation);
-        if !model
-            || insert.row_count != 1
+        let normal = [insert.normal.x, insert.normal.y, insert.normal.z];
+        if insert.row_count != 1
             || insert.column_count != 1
             || !insert.attributes.is_empty()
-            || !scales[0].is_finite()
-            || scales[0] <= 0.
-            || scales.iter().any(|s| *s != scales[0])
-            || placement.x_axis[2].abs() > 1e-12
-            || placement.y_axis[2].abs() > 1e-12
-            || placement.x_axis[0] * placement.y_axis[1] - placement.x_axis[1] * placement.y_axis[0]
-                <= 0.
+            || scales.iter().any(|v| !v.is_finite() || *v == 0.)
+            || normal.iter().any(|v| !v.is_finite())
+            || normal.iter().all(|v| *v == 0.)
+            || !insert.rotation.is_finite()
         {
-            self.losses.note(format!("XREF {} requires Model ownership, one attachment, no attributes, Z rotation and positive uniform scale",record.name));
+            self.losses.note(format!("XREF {} requires one INSERT without attributes, finite rotation/normal and finite nonzero XYZ scale",record.name));
             return Ok(None);
         }
+        let placement = placement_out(insert.insert_point, insert.normal, 0.);
         let Some(source_id) = self.external_source(record)? else {
             return Ok(None);
         };
         Ok(Some(IfccadEntityKind::Xref(IfccadXref {
             source_id,
-            placement,
-            scale: scales[0],
+            transform: IfccadBlockTransform {
+                placement,
+                rotation: insert.rotation,
+                scale: scales,
+            },
             reference_type: if record.flags.is_xref_overlay {
                 IfccadXrefReferenceType::Overlay
             } else {

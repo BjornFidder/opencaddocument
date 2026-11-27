@@ -50,3 +50,7 @@ required-features = ["ifcx"]
 [[example]]
 name = "leaders_gallery"
 required-features = ["ifcx"]
+
+[[example]]
+name = "xref_placement_review"
+required-features = ["ifcx", "mline-pilot"]

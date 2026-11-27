@@ -84,7 +84,7 @@ const TEMPLATE: &str = r#"{
     "author": "OpenCAD",
     "timestamp": "1970-01-01T00:00:00Z"
   },
-  "imports": [{ "uri": "urn:example:ifccad:0.12.0" }],
+  "imports": [{ "uri": "urn:example:ifccad:0.13.0" }],
   "schemas": {},
   "data": [
     {
@@ -103,7 +103,7 @@ const TEMPLATE: &str = r#"{
           "nextLayoutId": 2,
           "nextLinePatternId": 1,
           "nextSymbolSourceId": 1,
-          "profileVersion": "0.12.0",
+          "profileVersion": "0.13.0",
           "nextUcsId": 1,
           "nextModelWindowId": 1
         }
@@ -749,7 +749,7 @@ fn add_in(
         return Ok(None);
     };
     let converted = match &entity.kind {
-        IfccadEntityKind::Xref(source) => xref::insert_in(source, names),
+        IfccadEntityKind::Xref(source) => xref::insert_in(source, names, losses),
         IfccadEntityKind::Dimension(source) => {
             dimension::dimension_in(source, document, names, losses)
         }
@@ -1497,7 +1497,7 @@ impl Losses {
 
 fn entity_in(kind: &IfccadEntityKind, names: &Names, losses: &mut Losses) -> Option<EntityType> {
     Some(match kind {
-        IfccadEntityKind::Xref(source) => return xref::insert_in(source, names),
+        IfccadEntityKind::Xref(source) => return xref::insert_in(source, names, losses),
         IfccadEntityKind::AttributeDefinition(a) => {
             return attributes::definition_in(a, names, losses)
         }

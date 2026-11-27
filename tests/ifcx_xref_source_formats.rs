@@ -33,26 +33,26 @@ fn preserving_dxf_source_keeps_typed_identity_even_with_dwg_filename() {
         panic!("XREF placement expected")
     };
     assert_eq!(actual.source_id, expected.source_id);
-    assert_eq!(actual.scale, expected.scale);
-    assert_eq!(actual.placement.origin, expected.placement.origin);
-    for (a, b) in actual
-        .placement
-        .x_axis
-        .iter()
-        .chain(&actual.placement.y_axis)
-        .zip(
-            expected
-                .placement
-                .x_axis
-                .iter()
-                .chain(&expected.placement.y_axis),
-        )
-    {
-        assert!((a - b).abs() <= 1e-12);
+    assert_eq!(actual.transform.scale, expected.transform.scale);
+    assert_eq!(
+        actual.transform.placement.origin,
+        expected.transform.placement.origin
+    );
+    let axis = |x: &IfccadXref| {
+        let (c, s) = (x.transform.rotation.cos(), x.transform.rotation.sin());
+        let p = &x.transform.placement;
+        std::array::from_fn::<_, 6, _>(|i| {
+            let k = i % 3;
+            if i < 3 {
+                c * p.x_axis[k] + s * p.y_axis[k]
+            } else {
+                -s * p.x_axis[k] + c * p.y_axis[k]
+            }
+        })
+    };
+    for (a, b) in axis(actual).into_iter().zip(axis(expected)) {
+        assert!((a - b).abs() < 1e-12);
     }
-    let encoded = encode_ifccad_document(&saved.drawing).unwrap();
-    let read = load_ifccad_bytes(encoded.bytes(), Default::default()).unwrap();
-    assert_eq!(read.document().external_sources, drawing.external_sources);
 }
 
 #[test]

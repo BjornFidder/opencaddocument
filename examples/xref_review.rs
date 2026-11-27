@@ -128,7 +128,7 @@ fn main() -> std::result::Result<(), Error> {
                 unreachable!()
             };
             xref.source_id = definition.id;
-            xref.placement.origin[0] += index as f64 * 2000.;
+            xref.transform.placement.origin[0] += index as f64 * 2000.;
             gallery.external_sources.push(definition);
             gallery.model.entities.push(entity);
         }

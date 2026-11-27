@@ -22,7 +22,7 @@ fn xref_same_source_attach_overlay_preserving_roundtrip() {
         panic!()
     };
     x.reference_type = IfccadXrefReferenceType::Overlay;
-    x.placement.origin[0] += 100.;
+    x.transform.placement.origin[0] += 100.;
     drawing.model.entities.push(IfccadEntity::Native(overlay));
     let mut unused = drawing.external_sources[0].clone();
     unused.id = drawing.id_counters.allocate_external_source_id().unwrap();
@@ -59,16 +59,33 @@ fn xref_same_source_attach_overlay_preserving_roundtrip() {
             panic!()
         };
         assert_eq!(
-            (a.source_id, a.reference_type, a.scale, a.placement.origin),
-            (b.source_id, b.reference_type, b.scale, b.placement.origin)
+            (
+                a.source_id,
+                a.reference_type,
+                a.transform.scale,
+                a.transform.placement.origin
+            ),
+            (
+                b.source_id,
+                b.reference_type,
+                b.transform.scale,
+                b.transform.placement.origin
+            )
         );
-        for (a, b) in a
-            .placement
-            .x_axis
-            .iter()
-            .chain(&a.placement.y_axis)
-            .zip(b.placement.x_axis.iter().chain(&b.placement.y_axis))
-        {
+        // OCS canonicalization may move in-plane angle between frame and rotation.
+        let columns = |x: &IfccadXref| {
+            let (c, s) = (x.transform.rotation.cos(), x.transform.rotation.sin());
+            let p = &x.transform.placement;
+            std::array::from_fn::<_, 6, _>(|i| {
+                let k = i % 3;
+                if i < 3 {
+                    c * p.x_axis[k] + s * p.y_axis[k]
+                } else {
+                    -s * p.x_axis[k] + c * p.y_axis[k]
+                }
+            })
+        };
+        for (a, b) in columns(a).into_iter().zip(columns(b)) {
             assert!((a - b).abs() < 1e-12);
         }
     }
@@ -128,7 +145,7 @@ fn overlay_type_survives_physical_dwg_and_dxf() {
             panic!()
         };
         assert_eq!(x.reference_type, IfccadXrefReferenceType::Overlay);
-        assert_eq!(x.scale, 500.);
+        assert_eq!(x.transform.scale, [500.; 3]);
         validate_ifccad_document(&back.drawing).unwrap();
     }
 }

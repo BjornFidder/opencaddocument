@@ -1,6 +1,6 @@
-# External sources and Model XREF attachments
+# External sources and XREF placements
 
-The development mapping pairs with IFCCAD profile 0.12.0 / CBOR 12. The core
+The development mapping pairs with IFCCAD profile 0.13.0 / CBOR 13. The core
 owns native source/location validation. Document maps DWG XREF definitions to
 drawing-local external sources and INSERTs to native XREF placements.
 `import_ifccad_preserving` and `export_ifccad_preserving` retain native source
@@ -8,12 +8,21 @@ and entity IDs, original URI spelling and optional expected FingerprintGUID.
 Context history retains earlier authored locators for undo after a native save.
 Resolving a file at another location does not implicitly rewrite its locator.
 
-Supported placements are Model attachments with Z rotation and positive uniform
-effective scale. The scale already includes any insertion-unit conversion.
-Neither direction multiplies the unit factor again. Source base points belong
-to the external source; placement is stored once as O/X/Y. Unknown offline
-source units remain absent. A source definition without an INSERT is retained.
-Loaded external bodies are not emitted as native blocks or Model entities.
+Supported placements use the shared block transform: an orthonormal owner
+frame, rotation in radians and finite nonzero signed XYZ effective scale.
+Model, Paper layouts and local blocks may own XREFs. Scale includes insertion
+unit conversion once. INSERT coordinates use CAD OCS; native O belongs to the
+owner frame. Frame angle and explicit rotation combine once. Source base
+points belong to the external source and are subtracted once by the host.
+Source Model alone is loaded even for Paper owners. Unknown units stay absent.
+A definition without an INSERT is retained. Loaded external bodies and their
+dependent blocks are not emitted as authored native geometry.
+
+Attach and Overlay can share one native source ID. CAD requires distinct block
+records for the two relationship types; context retains their shared source ID
+when saving native files. A standalone CAD roundtrip has distinct source IDs for
+those definitions: path/GUID equality never silently merges authored identities.
+FileDepList identity is emitted once per source, with a count across all owners.
 
 The pure location helpers distinguish a direct URI-reference from a search
 filename. Relative CAD paths map to escaped relative URI-references; drive
@@ -45,9 +54,9 @@ separate qualification. Extra physical dependency metadata and unbound records
 produce native conversion loss diagnostics; the first native source model
 retains only the qualified expected FingerprintGUID.
 
-Overlay, arrays, Paper ownership, XREF inside a local block, nonuniform or
-reflected scaling and INSERT attributes produce explicit conversion losses.
-Native core validation enforces the same placement/ownership boundary.
-Nested reference graphs, binding, packaging, remote download and additional
-source formats remain outside this slice. The core stays independent of CAD
-runtimes; Document owns CAD conversion, and the host owns resolution and I/O.
+Arrays and INSERT attributes remain explicit conversion losses. Nesting and
+cycles retain the existing host-owned graph behavior. Binding, packaging,
+remote download and additional source formats are outside this slice. The core
+stays independent of CAD runtimes; Document owns CAD conversion and the host
+owns resolution and IO. This is an unpublished native13 draft with an explicit
+local IFCCAD patch, pending native staging and final downstream pins.
